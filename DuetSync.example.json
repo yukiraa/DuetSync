@@ -1,0 +1,42 @@
+{
+  "mode": "Host",
+  "listen_port": 47800,
+  "host_address": "",
+  "join_code_minutes": 30,
+  "output_device": null,
+  "mic_device": null,
+  "calib_output_device": null,
+  "guest_reference_input": null,
+  "use_guest_reference": true,
+  "guest_audio": "DiscordProcess",
+  "chirp_count": 8,
+  "chirp_spacing_ms": 1500.0,
+  "chirp_amplitude": 0.5,
+  "manual_guest_latency_ms": 0.0,
+  "fine_tune_ms": 0.0,
+  "host_mic_latency_ms": 0.0,
+  "music_latency_ms": 0.0,
+  "margin_ms": 20.0,
+  "obs_host": "127.0.0.1",
+  "obs_port": 4455,
+  "remember_obs_password": false,
+  "obs_password": null,
+  "obs_host_mic": null,
+  "obs_guest": null,
+  "obs_music": null,
+  "ledger": {
+    "baseline": {},
+    "applied": {}
+  },
+  "video": {
+    "host_source": null,
+    "guest_source": null,
+    "host_ms": 0,
+    "guest_ms": 0
+  },
+  "last_track": null,
+  "output_latency_ms": 0.0,
+  "volume": 1.0,
+  "drift_correction": true,
+  "countdown_s": 4.0
+}

@@ -1,0 +1,60 @@
+[package]
+name = "duetsync"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Sing together, anywhere. Remote duet sync helper for Discord + OBS."
+repository = "https://github.com/duetsync/duetsync"
+publish = false
+
+[lib]
+name = "duetsync"
+path = "src/lib.rs"
+
+[[bin]]
+name = "DuetSync"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rustfft = { version = "6.4", default-features = false }
+tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+sha2 = "0.10"
+hmac = "0.12"
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+base64 = "0.22"
+getrandom = "0.3"
+hound = "3.5"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_System_Threading",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_Security",
+    "Win32_System_Console",
+    "Win32_UI_Controls_Dialogs",
+] }
+windows-core = "0.62"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
