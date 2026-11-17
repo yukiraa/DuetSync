@@ -45,57 +45,57 @@ you trust where you got the file (or build it yourself, see below).
 
 ---
 
-## First-time setup (5 minutes)
+## How the app guides you
 
-### Host (the person running OBS)
+On first launch DuetSync asks **"Who's singing today?"**. Pick **Let's host!** (you run OBS) or
+**Join the duet!** (your partner invited you). You can change it later with **Switch role**.
 
-1. **OBS:** *Tools → WebSocket Server Settings → Enable WebSocket server*. Note the port
-   (default 4455) and set a password.
-2. In OBS, create these audio sources (see [docs/OBS_ROUTING.md](docs/OBS_ROUTING.md)):
-   - your **microphone**;
-   - **Application Audio Capture** of **Discord** (your partner's voice);
-   - **Application Audio Capture** of **DuetSync** (your instrumental).
-   Mute or remove *Desktop Audio*, because it would add Discord and the music a second time.
-3. Open DuetSync and choose **Host** at the top right.
-4. **Audio** panel:
-   - *Instrumental output*: your headphones.
-   - *Guest voice source*: **Discord app** (auto-detected). Press **Test guest source**
-     while your partner talks. It should report "audio present".
-5. **Session → Create session.** Copy the invite (looks like `100.64.1.2:47800#ABCDE-…`)
-   and send it to your partner in a **private** message. The code expires for new joins after
-   the time you set (reconnects keep working).
-6. **OBS compensation** tab → enter the OBS password → **Connect OBS**.
-   Assign *Your mic*, *Instrumental* and *Guest (Discord)* to the matching OBS inputs.
+After that, the left side shows **Your journey**: numbered steps. A star means a step is done,
+and the big coloured circle is where you are. The mascot at the top always says what to do next
+(**NEXT UP**). Each screen has one coloured button: coral for the host, mint for the guest. That
+is the one to press. **Next** moves on; you can click any step to go back. Rarely needed options
+are under **+ Advanced settings**.
 
-### Guest
+### Before you start (host, once)
 
-1. Open DuetSync and choose **Guest**.
-2. Paste the invite into **Session** and press **Join session**. When the clock shows
-   `clock ±x ms` at the top right, you are synchronized.
-3. **Audio** panel:
-   - *Instrumental output*: your headphones.
-   - *Calibration signal output*: something your **Discord microphone can hear**:
-     - **speakers** placed near your mic, **or**
-     - a **virtual audio cable** (e.g. VB-CABLE) that you selected as Discord's input
-       device for the calibration.
-     Playing the test signal into headphones will **not** reach your microphone.
-   - *Verify with my input*: select your microphone (or the cable's output). Press
-     **Test routing**. It must say "routing OK".
-4. In **Discord → Voice & Video**, for the calibration only: turn **off** Noise Suppression
-   (Krisp), **off** Echo Cancellation, and make sure input sensitivity lets the sweeps
-   through. You can turn them back on afterwards.
+In OBS: *Tools → WebSocket Server Settings → Enable WebSocket server*, and set a password.
+Create these audio sources (see [docs/OBS_ROUTING.md](docs/OBS_ROUTING.md)):
+- your **microphone**;
+- **Application Audio Capture** of **Discord** (your partner's voice);
+- **Application Audio Capture** of **DuetSync** (your instrumental).
 
-### Both
+Mute or remove *Desktop Audio*, because it would add Discord and the music a second time.
 
-**Player** tab → **Load WAV…** (or drag the file onto the window). The Player shows
-"Partner has the identical file" when the SHA-256 fingerprints match. Playback is refused
-if they differ.
+### Host journey
+
+1. **Find your partner:** press **Create session**, then **Copy invite**. Send it to your partner
+   in a **private** Discord message. New joins stop when the code expires; a partner who
+   already joined can always reconnect.
+2. **Set up audio:** choose your headphones and microphone. "Your partner's voice" is
+   normally **Discord app**. Press **Test partner's voice** while your partner talks.
+3. **Load the song:** press **Choose song (.wav)** or drop the file on the window. Both of you
+   need the exact same file (checked by fingerprint).
+4. **Measure the delay:** press **Measure delay** and stay quiet for about 15 s (details below).
+5. **Send to OBS:** connect OBS, tell DuetSync which source is which, press **Apply to OBS**.
+6. **Sing!:** press **Play**. You both hear the music at the same moment.
+
+### Guest journey
+
+1. **Join your host:** paste the invite and press **Join**.
+2. **Set up audio:** choose your headphones. "Where the test sound plays" must be something
+   your **Discord microphone can hear**: speakers near the mic, or a virtual cable (e.g.
+   VB-CABLE) set as Discord's input. Headphones do **not** reach the mic. Press **Test sound
+   path**; it must say the sound was heard.
+3. **Load the song:** the same .wav file as your host.
+4. **Get ready to measure:** in **Discord → Voice & Video**, turn **off** Noise Suppression
+   (Krisp) and Echo Cancellation, and let quiet sounds through. Your host starts the measurement.
+5. **Sing!:** your host presses Play.
 
 ---
 
 ## Calibrate
 
-Host: **Calibrate** tab → **Calibrate**. Stay quiet for ~15 seconds.
+Host: step 4 **Measure the delay** → **Measure delay**. Stay quiet for ~15 seconds.
 
 - The guest's PC plays 8 short sweeps at moments fixed on the shared clock.
 - They travel through the guest's mic → Discord → the host's PC.
@@ -104,7 +104,7 @@ Host: **Calibrate** tab → **Calibrate**. Stay quiet for ~15 seconds.
 - Weak, missing, ambiguous or clipped sweeps are rejected. If fewer than 4 survive, the
   measurement is **rejected**: no number is invented.
 
-You can instead type a **manual latency**, and use **Fine tune** (±ms) after listening to
+Under **+ Advanced settings** you can instead type a **manual latency**, and use **Fine tune** (±ms) after listening to
 a test recording.
 
 Discord's delay changes over time and DuetSync cannot see it during a song. **Recalibrate
@@ -113,7 +113,7 @@ has changed.
 
 ## Apply to OBS
 
-**OBS compensation** tab:
+Host: step 5 **Send to OBS**:
 
 ```
 target          = largest source latency + safety margin
@@ -123,19 +123,19 @@ offset (source) = your original offset + (target − source latency)
 Example: guest latency 180 ms, margin 20 ms → your mic +200 ms, instrumental +200 ms,
 Discord +20 ms.
 
-Press **Apply compensation…**, review the table (original / now / new), and confirm.
+Press **Apply to OBS**, review the table (original / now / new), and confirm.
 DuetSync reads every value back from OBS and marks each one "verified" or "FAILED". Your original offsets are
 remembered, so recalibrating **replaces** the compensation and never adds to it.
-**Restore original offsets** puts them back.
+**Restore original** puts them back.
 
-*Avatar video delay (manual):* adds an OBS **Render Delay** filter (0–500 ms) to a host or
+*Avatar video delay (manual, under + Advanced settings):* adds an OBS **Render Delay** filter (0–500 ms) to a host or
 guest video source. Video latency is **not** measured. Set it by eye.
 
 ## Sing
 
-Host presses **Play**. Both PCs count down and start the instrumental at the same moment.
-The host sees `guest timeline ±x ms` (how far the guest's player is from the host's).
-Pause, Stop and seeking are mirrored to the guest. **Resync now** restarts both players in
+Host presses **Play** (step 6 or the play bar at the bottom). Both PCs count down and start the instrumental at the same moment.
+The host sees an **In time!** badge with how far the guest's player is from the host's.
+Pause, Stop and seeking are mirrored to the guest. **Resync** restarts both players in
 two seconds if something drifted.
 
 Monitor yourselves with headphones the normal way (Discord + local music). **Never**
@@ -155,7 +155,7 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Quick checks:
 | "Partner's file differs" | Not the same WAV (re-exported files differ). Send the exact file. |
 | Echo in the recording | Desktop Audio or monitoring enabled in OBS. See routing guide. |
 
-**Diagnostics** tab → **Export diagnostics** writes a text report (passwords and join codes
+**Diagnostics** (bottom of the journey) → **Export diagnostics** writes a text report (passwords and join codes
 redacted) next to the config file.
 
 ## Command line

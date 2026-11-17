@@ -37,6 +37,8 @@ pub struct VideoCfg {
 #[serde(default)]
 pub struct Config {
     pub mode: Mode,
+    /// False until the user has picked a role on the welcome screen.
+    pub onboarded: bool,
     // Session
     pub listen_port: u16,
     pub host_address: String,
@@ -83,6 +85,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             mode: Mode::Host,
+            onboarded: false,
             listen_port: crate::network::DEFAULT_PORT,
             host_address: String::new(),
             join_code_minutes: 30,

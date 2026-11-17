@@ -40,6 +40,9 @@ The full license texts are in each crate's source distribution on crates.io.
 - Hack: MIT / Bitstream Vera license
 - Noto Emoji: SIL Open Font License 1.1
 - emoji-icon-font: MIT / OFL
+- Fredoka (SemiBold, Bold) and Nunito (Regular, ExtraBold): SIL Open Font License 1.1,
+  bundled in `assets/fonts/` and embedded in `DuetSync.exe`. License texts:
+  `assets/fonts/OFL-Fredoka.txt` and `assets/fonts/OFL-Nunito.txt`.
 
 OBS Studio, obs-websocket, Discord, Tailscale and VB-CABLE are separate products. They are
 not distributed with DuetSync.

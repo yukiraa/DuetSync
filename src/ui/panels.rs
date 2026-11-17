@@ -1,21 +1,21 @@
-//! Panel contents. Every control calls a real `App` method; no placeholder data.
+//! Chrome around the journey: top bar, rail, transport, welcome, diagnostics, dialogs.
 
-use super::theme::{self, card, dot, fmt_time, meter, value};
-use super::{Gui, Tab};
-use crate::audio::{CaptureSource, DeviceInfo};
-use crate::calibration::CalibrationStatus;
-use crate::clock::now_us;
-use crate::config::{GuestAudio, Mode};
-use crate::obs::client::{OFFSET_MAX_MS, OFFSET_MIN_MS, VIDEO_DELAY_MAX_MS};
-use crate::obs::routing_warnings;
-use crate::playback::core::State;
-use eframe::egui::{self, RichText};
+use super::fun::{
+    card, check_row, finish_rail, fun_button, logo, pill, progress_track, rail_slot, round_button,
+    small_button, soft, sticker_with, stone, FunButton, Icon, Kind, StoneState,
+};
+use super::mascot::Mood;
+use super::steps;
+use super::theme::{
+    self, fmt_time, fredoka, fredoka_bold, nunito_x, CORAL, CORAL_TINT, ERR_TEXT, INK, INK_SOFT,
+    MINT, MINT_TINT, OFFLINE, PAPER, SUN,
+};
+use super::{Gui, View};
+use crate::audio::DeviceInfo;
+use crate::config::Mode;
+use eframe::egui::{self, Align, Color32, Layout, Margin, RichText, Stroke};
 
-fn weak(s: impl Into<String>) -> RichText {
-    RichText::new(s.into()).color(theme::WEAK)
-}
-
-fn device_combo(
+pub fn device_combo(
     ui: &mut egui::Ui,
     id: &str,
     cur: &mut Option<String>,
@@ -31,7 +31,7 @@ fn device_combo(
     };
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
-        .width(ui.available_width() - 6.0)
+        .width((ui.available_width() - 8.0).max(120.0))
         .selected_text(sel)
         .show_ui(ui, |ui| {
             changed |= ui.selectable_value(cur, None, "System default").changed();
@@ -44,13 +44,18 @@ fn device_combo(
     changed
 }
 
-fn input_combo(ui: &mut egui::Ui, id: &str, cur: &mut Option<String>, names: &[String]) -> bool {
+pub fn input_combo(
+    ui: &mut egui::Ui,
+    id: &str,
+    cur: &mut Option<String>,
+    names: &[String],
+) -> bool {
     let mut changed = false;
     egui::ComboBox::from_id_salt(id)
-        .width(220.0)
-        .selected_text(cur.clone().unwrap_or_else(|| "— not used —".into()))
+        .width(240.0)
+        .selected_text(cur.clone().unwrap_or_else(|| "- not used -".into()))
         .show_ui(ui, |ui| {
-            changed |= ui.selectable_value(cur, None, "— not used —").changed();
+            changed |= ui.selectable_value(cur, None, "- not used -").changed();
             for n in names {
                 changed |= ui
                     .selectable_value(cur, Some(n.clone()), n.as_str())
@@ -60,863 +65,463 @@ fn input_combo(ui: &mut egui::Ui, id: &str, cur: &mut Option<String>, names: &[S
     changed
 }
 
+/// Small pill that is mint while "on".
+pub fn toggle_chip(ui: &mut egui::Ui, label: &str, on: bool) -> egui::Response {
+    small_button(ui, label, if on { Kind::Mint } else { Kind::White })
+}
+
+/// Label + value row for a two-column grid.
+pub fn value(ui: &mut egui::Ui, label: &str, v: impl Into<String>) {
+    ui.label(soft(label));
+    ui.label(RichText::new(v.into()).font(nunito_x(14.0)));
+    ui.end_row();
+}
+
+// ------------------------------------------------------------------ top bar
+
 pub fn top_bar(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
+    let mut switch = false;
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("DuetSync")
-                .size(20.0)
-                .strong()
-                .color(theme::ACCENT),
-        );
-        ui.label(weak("Sing together, anywhere."));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut mode = app.cfg.mode;
-            ui.selectable_value(&mut mode, Mode::Guest, "Guest");
-            ui.selectable_value(&mut mode, Mode::Host, "Host");
-            if mode != app.cfg.mode {
-                app.stop();
-                app.stop_session();
-                app.cfg.mode = mode;
-                app.save();
+        logo(ui, 26.0);
+        ui.label(RichText::new("DuetSync").font(fredoka_bold(24.0)));
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let app = &g.app;
+            if fun_button(ui, "Switch role", Kind::Ghost).clicked() {
+                switch = true;
             }
-            ui.add_space(16.0);
-            if app.cfg.mode == Mode::Host {
-                let (c, t) = if app.obs_connected {
-                    (theme::OK, "OBS")
+            let host = app.cfg.mode == Mode::Host;
+            if host {
+                let (t, fill, dot) = if app.obs_connected && !app.cfg.ledger.applied.is_empty() {
+                    ("OBS synced", PAPER, MINT)
+                } else if app.obs_connected {
+                    ("OBS connected", PAPER, MINT)
                 } else {
-                    (theme::WEAK, "OBS offline")
+                    ("OBS offline", PAPER, OFFLINE)
                 };
-                dot(ui, c, t);
-            } else {
-                match app.clock_estimate() {
-                    Some(e) => dot(
+                pill(ui, t, fill, Some(dot));
+            }
+            if !host {
+                if let Some(e) = app.clock_estimate() {
+                    pill(
                         ui,
-                        if e.uncertainty_us < 10_000.0 {
-                            theme::OK
+                        &format!("Clock +-{:.1} ms", e.uncertainty_us / 1000.0),
+                        PAPER,
+                        Some(if e.uncertainty_us < 10_000.0 {
+                            MINT
                         } else {
-                            theme::WARN
-                        },
-                        &format!("clock ±{:.1} ms", e.uncertainty_us / 1000.0),
-                    ),
-                    None => dot(ui, theme::WEAK, "clock not synced"),
+                            SUN
+                        }),
+                    );
                 }
             }
-            let (c, t) = if app.connected() {
-                (theme::OK, "partner connected")
+            let (t, dot) = if app.connected() {
+                ("Partner here", MINT)
             } else if app.host.is_some() || app.guest.is_some() {
-                (theme::WARN, "waiting for partner")
+                ("Waiting for partner", SUN)
             } else {
-                (theme::WEAK, "no session")
+                ("Not connected", OFFLINE)
             };
-            dot(ui, c, t);
+            pill(ui, t, PAPER, Some(dot));
+            pill(
+                ui,
+                if host { "Host" } else { "Guest" },
+                if host { CORAL_TINT } else { MINT_TINT },
+                None,
+            );
         });
     });
+    if switch {
+        g.switch_role();
+    }
+}
+
+// --------------------------------------------------------------------- rail
+
+pub fn rail(g: &mut Gui, ui: &mut egui::Ui, done: &[bool]) {
+    let mode = g.app.cfg.mode;
+    let list = steps::steps(mode);
+    let accent = if mode == Mode::Host { CORAL } else { MINT };
+    let h = ui.available_height();
+    let gap = if h < 470.0 { 6.0 } else { 16.0 };
+    let selected = (g.view == View::Journey).then_some(g.step);
+    let mut clicked = None;
+    let mut diag = false;
+    egui::Frame::new()
+        .fill(PAPER)
+        .stroke(Stroke::new(theme::STROKE_W, INK))
+        .corner_radius(egui::CornerRadius::same(26))
+        .inner_margin(Margin::same(22))
+        .shadow(egui::Shadow {
+            offset: [0, 5],
+            blur: 0,
+            spread: 0,
+            color: INK,
+        })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.set_min_height((h - 44.0 - 14.0).max(100.0));
+            ui.spacing_mut().item_spacing.y = gap;
+            ui.label(RichText::new("Your journey").font(fredoka_bold(19.0)));
+            let slot = rail_slot(ui);
+            let mut ys: Vec<(f32, f32)> = vec![];
+            for (i, step) in list.iter().enumerate() {
+                let state = if selected == Some(i) {
+                    StoneState::Current
+                } else if done[i] {
+                    StoneState::Done
+                } else {
+                    StoneState::Todo
+                };
+                let r = stone(ui, state, i + 1, step.title(), accent);
+                ys.push((r.rect.min.x + 22.0, r.rect.center().y));
+                if r.clicked() {
+                    clicked = Some(i);
+                }
+            }
+            if let (Some(a), Some(b)) = (ys.first(), ys.last()) {
+                finish_rail(ui, slot, a.0, a.1, b.1);
+            }
+            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                if fun_button(ui, "Diagnostics", Kind::Ghost).clicked() {
+                    diag = true;
+                }
+            });
+        });
+    if let Some(i) = clicked {
+        g.step = i;
+        g.view = View::Journey;
+    }
+    if diag {
+        g.view = if g.view == View::Diagnostics {
+            View::Journey
+        } else {
+            View::Diagnostics
+        };
+    }
+}
+
+// ---------------------------------------------------------------- transport
+
+enum Tail {
+    Countdown(String),
+    Badge(String, Color32),
+    Hint(String),
 }
 
 pub fn transport(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
-    let host = app.cfg.mode == Mode::Host;
-    let rate = app.track_rate();
-    let total = app.track.as_ref().map(|t| t.frames).unwrap_or(0) as f64;
-    ui.horizontal(|ui| {
-        let has_track = app.track.is_some();
-        if host {
-            if app.playing() {
-                if ui.button("Pause").clicked() {
-                    app.pause();
-                }
-            } else if ui
-                .add_enabled(has_track, egui::Button::new("Play"))
-                .on_hover_text("Starts after the countdown on both computers")
-                .clicked()
-            {
-                let from = app.paused_at;
-                let cd = app.cfg.countdown_s;
-                app.host_play(from, cd);
-            }
-            if ui
-                .add_enabled(has_track, egui::Button::new("Stop"))
-                .clicked()
-            {
-                app.stop();
-            }
-        } else {
-            ui.label(weak("Host controls playback"));
-        }
-        let pos = g.seek_drag.unwrap_or_else(|| app.position_frames());
-        let mut p = pos;
-        let slider = ui.add_enabled(
-            host && has_track,
-            egui::Slider::new(&mut p, 0.0..=total.max(1.0))
-                .show_value(false)
-                .trailing_fill(true),
-        );
-        if slider.dragged() {
-            g.seek_drag = Some(p);
-        }
-        if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-            g.seek_drag = None;
-            app.seek(p as u64);
-        }
-        ui.label(
-            RichText::new(format!(
-                "{} / {}",
-                fmt_time(pos, rate),
-                fmt_time(total, rate)
-            ))
-            .monospace(),
-        );
-        if let Some(c) = app.countdown_s() {
-            ui.label(
-                RichText::new(format!("starting in {c:.1} s"))
-                    .color(theme::WARN)
-                    .strong(),
-            );
-        }
-        if let Some((e, unc)) = app.sync_error_ms() {
-            let c = if e.abs() <= 20.0 {
-                theme::OK
-            } else {
-                theme::WARN
-            };
-            ui.label(RichText::new(format!("guest timeline {e:+.1} ms (±{unc:.1})")).color(c));
-        }
-    });
-    if let Some((ok, msg)) = &app.status {
-        ui.label(RichText::new(msg).color(if *ok { theme::WEAK } else { theme::ERR }));
-    }
-    if let Some(b) = &app.busy {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(weak(b.clone()));
-        });
-    }
-}
-
-pub fn session(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
-    card(ui, "Session", |ui| {
-        if app.cfg.mode == Mode::Host {
-            if app.host.is_none() {
-                ui.horizontal(|ui| {
-                    ui.label("Port");
-                    ui.add(egui::DragValue::new(&mut app.cfg.listen_port).range(1024..=65535));
-                    ui.label("Code valid");
-                    ui.add(
-                        egui::DragValue::new(&mut app.cfg.join_code_minutes)
-                            .range(1..=1440)
-                            .suffix(" min"),
-                    );
-                });
-                if ui.button("Create session").clicked() {
-                    app.start_host();
-                    app.save();
-                }
-                ui.label(weak(
-                    "LAN or private VPN (e.g. Tailscale). Do not port-forward to the internet.",
-                ));
-            } else {
-                if let Some(code) = app.join_code.clone() {
-                    ui.label(weak(
-                        "Send your partner one of these invites (private chat only):",
-                    ));
-                    for h in app.invite_hosts.clone() {
-                        let invite = format!("{h}#{code}");
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new(&invite).monospace().size(12.0));
-                            if ui.small_button("Copy").clicked() {
-                                ui.ctx().copy_text(invite.clone());
-                            }
-                        });
-                    }
-                    let left = (app.code_expires_us - now_us()) / 60_000_000;
-                    ui.label(weak(if left >= 0 {
-                        format!(
-                            "New joins allowed for {left} more min (reconnects always allowed)."
-                        )
-                    } else {
-                        "Code expired for new joins.".into()
-                    }));
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("New code").clicked() {
-                        app.regenerate_code();
-                    }
-                    if ui.button("End session").clicked() {
-                        app.stop_session();
-                    }
-                });
-            }
-        } else if app.guest.is_none() {
-            ui.label("Invite from host");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.join_input)
-                    .hint_text("100.64.1.2:47800#XXXXX-XXXXX-...")
-                    .desired_width(f32::INFINITY),
-            );
-            if ui.button("Join session").clicked() {
-                app.join();
-                app.save();
-            }
-        } else {
-            ui.label(if app.connected() {
-                format!("Connected to {}", app.peer.clone().unwrap_or_default())
-            } else {
-                "Connecting / reconnecting...".into()
-            });
-            if ui.button("Leave session").clicked() {
-                app.stop_session();
-            }
-        }
-        if let Some(e) = app.clock_estimate() {
-            egui::Grid::new("clk").num_columns(2).show(ui, |ui| {
-                value(
-                    ui,
-                    "Round trip",
-                    format!(
-                        "{:.1} ms (min {:.1})",
-                        e.rtt_median_us / 1000.0,
-                        e.rtt_min_us / 1000.0
-                    ),
-                );
-                value(
-                    ui,
-                    "Clock uncertainty",
-                    format!("±{:.1} ms", e.uncertainty_us / 1000.0),
-                );
-                value(ui, "Clock drift", format!("{:+.1} ppm", e.drift_ppm));
-            });
-        } else if let Some(r) = &app.remote {
-            egui::Grid::new("clk").num_columns(2).show(ui, |ui| {
-                value(
-                    ui,
-                    "Round trip",
-                    format!("{:.1} ms", r.rtt_us as f64 / 1000.0),
-                );
-                value(
-                    ui,
-                    "Guest clock",
-                    format!("±{:.1} ms", r.clock_uncertainty_us as f64 / 1000.0),
-                );
-            });
-        }
-    });
-}
-
-pub fn audio(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
-    card(ui, "Audio", |ui| {
-        ui.label(weak("Instrumental output (your headphones)"));
-        let mut out = app.cfg.output_device.clone();
-        if device_combo(ui, "out", &mut out, &app.outputs) {
-            app.change_output_device(out);
-            app.save();
-        }
-        meter(ui, app.out_peak);
-        ui.add_space(4.0);
-        if app.cfg.mode == Mode::Host {
-            ui.label(weak("Your microphone"));
-            if device_combo(ui, "mic", &mut app.cfg.mic_device, &app.inputs) {
-                app.monitor = None;
-                app.save();
-            }
-            ui.label(weak("Guest voice source (Discord output)"));
-            let mut kind = match &app.cfg.guest_audio {
-                GuestAudio::DiscordProcess => 0,
-                GuestAudio::OutputLoopback(_) => 1,
-                GuestAudio::Input(_) => 2,
-            };
-            let before = kind;
+    // Status / busy line above the pill.
+    {
+        let app = &g.app;
+        if let Some(b) = &app.busy {
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut kind, 0, "Discord app");
-                ui.selectable_value(&mut kind, 1, "Output device");
-                ui.selectable_value(&mut kind, 2, "Input device");
-            });
-            if kind != before {
-                app.cfg.guest_audio = match kind {
-                    0 => GuestAudio::DiscordProcess,
-                    1 => GuestAudio::OutputLoopback(None),
-                    _ => GuestAudio::Input(None),
-                };
-                app.save();
-            }
-            let (outs, ins) = (app.outputs.clone(), app.inputs.clone());
-            match &mut app.cfg.guest_audio {
-                GuestAudio::DiscordProcess => {
-                    ui.label(weak(match app.discord.first() {
-                        Some(d) => format!("Found {} (pid {})", d.name, d.pid),
-                        None => "Discord not detected (start it, then Refresh)".into(),
-                    }));
-                }
-                GuestAudio::OutputLoopback(id) => {
-                    device_combo(ui, "gout", id, &outs);
-                }
-                GuestAudio::Input(id) => {
-                    device_combo(ui, "gin", id, &ins);
-                }
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Test guest source").clicked() {
-                    app.test_guest_capture();
-                }
-                let mon = app.monitor.is_some();
-                if ui.selectable_label(mon, "Mic level").clicked() {
-                    let src = CaptureSource::Input(app.cfg.mic_device.clone());
-                    app.toggle_monitor(Some(src));
-                }
-            });
-        } else {
-            ui.label(weak("Calibration signal output"));
-            if device_combo(ui, "cal", &mut app.cfg.calib_output_device, &app.outputs) {
-                app.save();
-            }
-            ui.label(weak(
-                "Speakers your mic can hear, or a virtual cable set as Discord's input.",
-            ));
-            ui.checkbox(
-                &mut app.cfg.use_guest_reference,
-                "Verify with my input (recommended)",
-            );
-            if app.cfg.use_guest_reference {
-                device_combo(ui, "ref", &mut app.cfg.guest_reference_input, &app.inputs);
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Test routing").clicked() {
-                    app.save();
-                    app.test_routing();
-                }
-                let mon = app.monitor.is_some();
-                if ui.selectable_label(mon, "Input level").clicked() {
-                    let src = CaptureSource::Input(app.cfg.guest_reference_input.clone());
-                    app.toggle_monitor(Some(src));
-                }
-            });
-        }
-        if app.monitor.is_some() {
-            meter(ui, app.monitor_peak);
-        }
-        if ui.small_button("Refresh devices").clicked() {
-            app.refresh_devices();
-        }
-    });
-}
-
-pub fn calibrate(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
-    if app.cfg.mode == Mode::Guest {
-        card(ui, "Calibration (guest)", |ui| {
-            ui.label("The host starts calibration. Your computer then plays short test sweeps that travel through your Discord microphone path to the host.");
-            ui.label(weak("Before calibrating in Discord: turn OFF Noise Suppression (Krisp) and Echo Cancellation, and set input sensitivity low enough that the sweeps are transmitted. Turn them back on afterwards if you like."));
-            ui.label(weak("Playing the sweep into headphones does NOT reach your microphone: use speakers near the mic, or a virtual cable that Discord uses as input."));
-            if let Some(n) = &app.guest_calib_note {
-                ui.label(RichText::new(n).color(theme::ACCENT));
-            }
-            ui.horizontal(|ui| {
-                ui.label("Test signal level");
-                ui.add(egui::Slider::new(&mut app.cfg.chirp_amplitude, 0.05..=0.9));
-            });
-        });
-        return;
-    }
-    card(ui, "Assisted calibration", |ui| {
-        ui.label("Measures guest voice latency: guest-mic -> Discord -> this PC, using test sweeps scheduled on the shared clock.");
-        ui.horizontal(|ui| {
-            ui.label("Signals");
-            ui.add(egui::DragValue::new(&mut app.cfg.chirp_count).range(4..=16));
-            ui.label("Spacing");
-            ui.add(
-                egui::DragValue::new(&mut app.cfg.chirp_spacing_ms)
-                    .range(800.0..=3000.0)
-                    .suffix(" ms"),
-            );
-            ui.label("Level");
-            ui.add(
-                egui::DragValue::new(&mut app.cfg.chirp_amplitude)
-                    .range(0.05..=0.9)
-                    .speed(0.01),
-            );
-        });
-        let can = app.can_calibrate();
-        ui.horizontal(|ui| {
-            let b = ui.add_enabled(can.is_ok(), egui::Button::new("Calibrate"));
-            if b.clicked() {
-                app.save();
-                app.start_calibration();
-            }
-            if let Err(why) = &can {
-                ui.label(weak(why.clone()));
-            }
-        });
-        if let Some(p) = app.calibration_progress() {
-            ui.add(egui::ProgressBar::new(p as f32).text("measuring... keep quiet"));
-        }
-    });
-    ui.add_space(8.0);
-    card(ui, "Result", |ui| match &app.last_calib {
-        None => {
-            ui.label(weak("No measurement yet."));
-        }
-        Some(o) => {
-            let r = &o.result;
-            let (c, s) = match r.status {
-                CalibrationStatus::Valid => (theme::OK, "Valid"),
-                CalibrationStatus::LowConfidence => (theme::WARN, "Low confidence"),
-                CalibrationStatus::Invalid => (theme::ERR, "Rejected"),
-            };
-            ui.label(RichText::new(s).color(c).strong());
-            egui::Grid::new("res").num_columns(2).show(ui, |ui| {
-                value(
-                    ui,
-                    "Relative latency",
-                    r.median_ms
-                        .map(|m| format!("{m:.1} ms"))
-                        .unwrap_or("—".into()),
-                );
-                value(
-                    ui,
-                    "Uncertainty (~95 %)",
-                    r.uncertainty_ms
-                        .map(|m| format!("±{m:.1} ms"))
-                        .unwrap_or("—".into()),
-                );
-                value(
-                    ui,
-                    "Jitter",
-                    r.jitter_ms
-                        .map(|m| format!("{m:.1} ms"))
-                        .unwrap_or("—".into()),
-                );
-                value(
-                    ui,
-                    "Range",
-                    match (r.min_ms, r.max_ms) {
-                        (Some(a), Some(b)) => format!("{a:.1} … {b:.1} ms"),
-                        _ => "—".into(),
-                    },
-                );
-                value(
-                    ui,
-                    "Signals accepted",
-                    format!("{}/{} ({} outliers)", r.accepted, r.total, r.outliers),
-                );
-                value(ui, "Confidence", format!("{:.0} %", r.confidence * 100.0));
-                value(
-                    ui,
-                    "Clock uncertainty",
-                    format!("±{:.1} ms", r.clock_uncertainty_ms),
-                );
-                value(
-                    ui,
-                    "Reference",
-                    if o.reference {
-                        "guest input timestamps"
-                    } else {
-                        "scheduled playback times"
-                    },
-                );
-            });
-            for m in &r.messages {
-                ui.label(RichText::new(format!("• {m}")).color(theme::WARN));
-            }
-            ui.collapsing("Per-signal results", |ui| {
-                for (k, p) in r.per_chirp.iter().enumerate() {
-                    ui.label(match p {
-                        Ok(v) => format!("#{k}: {v:.2} ms"),
-                        Err(e) => format!("#{k}: {e}"),
-                    });
-                }
-            });
-        }
-    });
-    ui.add_space(8.0);
-    card(ui, "Guest latency used for compensation", |ui| {
-        ui.checkbox(&mut app.use_measured, "Use measured value when valid");
-        ui.horizontal(|ui| {
-            ui.label("Manual latency");
-            ui.add(
-                egui::DragValue::new(&mut app.cfg.manual_guest_latency_ms)
-                    .range(0.0..=2000.0)
-                    .suffix(" ms"),
-            );
-            ui.label("Fine tune");
-            ui.add(
-                egui::DragValue::new(&mut app.cfg.fine_tune_ms)
-                    .range(-200.0..=200.0)
-                    .speed(0.5)
-                    .suffix(" ms"),
-            );
-        });
-        if let Some(l) = app.guest_latency_ms() {
-            ui.label(RichText::new(format!("In use: {l:.1} ms")).strong());
-        }
-        for s in app.staleness() {
-            ui.label(RichText::new(format!("• {s}")).color(theme::WEAK));
-        }
-    });
-}
-
-pub fn obs(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
-    card(ui, "OBS WebSocket", |ui| {
-        ui.horizontal(|ui| {
-            ui.label("Host");
-            ui.add(egui::TextEdit::singleline(&mut app.cfg.obs_host).desired_width(110.0));
-            ui.label("Port");
-            ui.add(egui::DragValue::new(&mut app.cfg.obs_port));
-            ui.label("Password");
-            ui.add(
-                egui::TextEdit::singleline(&mut app.obs_password)
-                    .password(true)
-                    .desired_width(130.0),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.checkbox(
-                &mut app.cfg.remember_obs_password,
-                "Remember password (stored locally)",
-            );
-            if app.obs_connected {
-                if ui.button("Refresh").clicked() {
-                    app.obs_refresh();
-                }
-                if ui.button("Disconnect").clicked() {
-                    app.obs.send(crate::obs::ObsCmd::Disconnect);
-                }
-            } else if ui
-                .add_enabled(!app.obs_busy, egui::Button::new("Connect OBS"))
-                .clicked()
-            {
-                app.save();
-                app.obs_connect();
-            }
-            if app.obs_busy {
                 ui.spinner();
-            }
-        });
-        if app.obs_connected {
-            ui.label(weak(app.obs_version.clone()));
-        } else {
-            ui.label(weak(
-                "OBS -> Tools -> WebSocket Server Settings -> Enable. Keep it on localhost.",
-            ));
-        }
-    });
-    if !app.obs_connected {
-        return;
-    }
-    ui.add_space(8.0);
-    let names: Vec<String> = app
-        .obs_inputs
-        .iter()
-        .filter(|i| i.is_audio())
-        .map(|i| i.name.clone())
-        .collect();
-    let all_names: Vec<String> = app.obs_inputs.iter().map(|i| i.name.clone()).collect();
-    card(ui, "Audio sources and latency", |ui| {
-        let mut changed = false;
-        let guest_l = app.guest_latency_ms();
-        egui::Grid::new("roles")
-            .num_columns(4)
-            .spacing([10.0, 6.0])
-            .show(ui, |ui| {
-                ui.label(weak("Role"));
-                ui.label(weak("OBS input"));
-                ui.label(weak("Latency"));
-                ui.label(weak("Current offset"));
-                ui.end_row();
-                let cur = app.current_offsets();
-                let show = |ui: &mut egui::Ui, n: &Option<String>| {
-                    ui.label(
-                        RichText::new(
-                            n.as_ref()
-                                .and_then(|n| cur.get(n))
-                                .map(|o| format!("{o} ms"))
-                                .unwrap_or("—".into()),
-                        )
-                        .monospace(),
-                    );
-                };
-                ui.label("Your mic");
-                changed |= input_combo(ui, "r_mic", &mut app.cfg.obs_host_mic, &names);
-                ui.add(
-                    egui::DragValue::new(&mut app.cfg.host_mic_latency_ms)
-                        .range(-500.0..=2000.0)
-                        .suffix(" ms"),
-                );
-                show(ui, &app.cfg.obs_host_mic);
-                ui.end_row();
-                ui.label("Instrumental");
-                changed |= input_combo(ui, "r_mus", &mut app.cfg.obs_music, &names);
-                ui.add(
-                    egui::DragValue::new(&mut app.cfg.music_latency_ms)
-                        .range(-500.0..=2000.0)
-                        .suffix(" ms"),
-                );
-                show(ui, &app.cfg.obs_music);
-                ui.end_row();
-                ui.label("Guest (Discord)");
-                changed |= input_combo(ui, "r_gst", &mut app.cfg.obs_guest, &names);
-                ui.label(
-                    RichText::new(guest_l.map(|l| format!("{l:.1} ms")).unwrap_or("—".into()))
-                        .monospace(),
-                );
-                show(ui, &app.cfg.obs_guest);
-                ui.end_row();
+                ui.label(soft(b.clone()));
             });
-        ui.horizontal(|ui| {
-            ui.label("Safety margin");
+        } else if let Some((ok, msg)) = &app.status {
             ui.add(
-                egui::DragValue::new(&mut app.cfg.margin_ms)
-                    .range(0.0..=500.0)
-                    .suffix(" ms"),
+                egui::Label::new(RichText::new(msg).font(theme::nunito(13.0)).color(if *ok {
+                    INK_SOFT
+                } else {
+                    ERR_TEXT
+                }))
+                .truncate(),
             );
-            ui.label(weak(
-                "added to every source; absorbs small latency changes, does not track them",
-            ));
-        });
-        if changed {
-            app.save();
         }
-        let comp: Vec<_> =
-            crate::obs::compensation::compensation(&app.source_latencies(), app.cfg.margin_ms);
-        if !comp.is_empty() {
-            ui.add_space(4.0);
-            ui.label(weak("Compensation (target − source latency):"));
-            for (n, c) in &comp {
-                ui.label(RichText::new(format!("  {n}: +{c:.0} ms")).monospace());
-            }
+    }
+    let host = g.app.cfg.mode == Mode::Host;
+    let rate = g.app.track_rate();
+    let total = g.app.track.as_ref().map(|t| t.frames).unwrap_or(0) as f64;
+    let has_track = g.app.track.is_some();
+    let playing = g.app.playing();
+    let pos = g.seek_drag.unwrap_or_else(|| g.app.position_frames());
+    let countdown = g.app.countdown_s();
+    let sync = g.app.sync_error_ms();
+    let time_s = format!("{} / {}", fmt_time(pos, rate), fmt_time(total, rate));
+    let tail = if let Some(c) = countdown {
+        Tail::Countdown(format!("Starting in {}...", c.ceil() as u32))
+    } else if let Some((e, _)) = sync.filter(|_| host) {
+        if e.abs() <= 20.0 {
+            Tail::Badge(format!("In time! {e:+.1} ms"), MINT)
+        } else {
+            Tail::Badge(format!("Off by {e:+.1} ms"), SUN)
         }
-        for w in routing_warnings(
-            &app.obs_inputs,
-            app.cfg.obs_host_mic.as_deref(),
-            app.cfg.obs_guest.as_deref(),
-            app.cfg.obs_music.as_deref(),
-        ) {
-            ui.label(RichText::new(format!("Warning: {w}")).color(theme::WARN));
-        }
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(
-                    !app.obs_busy && !comp.is_empty(),
-                    egui::Button::new("Apply compensation…"),
-                )
-                .clicked()
-            {
-                app.prepare_apply();
-            }
-            let n = app.cfg.ledger.baseline.len();
-            if ui
-                .add_enabled(
-                    !app.obs_busy && n > 0,
-                    egui::Button::new(format!("Restore original offsets ({n})")),
-                )
-                .clicked()
-            {
-                app.confirm_restore = true;
-            }
-        });
-        if !app.last_apply.is_empty() {
-            for r in &app.last_apply {
-                let (c, t) = match &r.readback {
-                    Ok(v) if *v == r.requested => {
-                        (theme::OK, format!("{}: {} ms verified", r.input, v))
-                    }
-                    Ok(v) => (
-                        theme::ERR,
-                        format!(
-                            "FAILED {}: requested {} ms, OBS reports {v} ms",
-                            r.input, r.requested
-                        ),
-                    ),
-                    Err(e) => (theme::ERR, format!("FAILED {}: {e}", r.input)),
+    } else if host {
+        Tail::Hint(if !has_track {
+            "Load a song in step 3 to play".into()
+        } else if playing {
+            "Playing".into()
+        } else {
+            "Ready to play".into()
+        })
+    } else {
+        Tail::Hint(String::new())
+    };
+    let mut want_seek: Option<f64> = None;
+    let mut play_clicked = false;
+    let mut pause_clicked = false;
+    let mut stop_clicked = false;
+    let mut resync_clicked = false;
+    sticker_with(
+        ui,
+        PAPER,
+        255,
+        Margin {
+            left: 10,
+            right: 18,
+            top: 9,
+            bottom: 9,
+        },
+        3,
+        |ui| {
+            ui.horizontal(|ui| {
+                let sp = 14.0;
+                ui.spacing_mut().item_spacing.x = sp;
+                let measure = |ui: &egui::Ui, s: &str, f: egui::FontId| {
+                    ui.painter().layout_no_wrap(s.to_owned(), f, INK).size().x
                 };
-                ui.label(RichText::new(t).color(c));
-            }
-        }
-        ui.label(weak(format!("OBS accepts offsets from {OFFSET_MIN_MS} to {OFFSET_MAX_MS} ms. Monitor your own voice outside OBS (headphones / Discord), not through the delayed OBS mix.")));
-    });
-    ui.add_space(8.0);
-    card(ui, "Avatar video delay (manual)", |ui| {
-        ui.label(weak("Adds an OBS Render Delay filter named \"DuetSync Delay\". Video latency is not measured automatically: match lips to audio by eye. Uses GPU frame buffering up to 500 ms."));
-        let v = &mut app.cfg.video;
-        let mut actions: Vec<(String, Option<i64>)> = vec![];
-        egui::Grid::new("video").num_columns(4).show(ui, |ui| {
-            for (label, src, ms) in [
-                ("Host avatar", &mut v.host_source, &mut v.host_ms),
-                ("Guest avatar", &mut v.guest_source, &mut v.guest_ms),
-            ] {
-                ui.label(label);
-                input_combo(ui, label, src, &all_names);
-                ui.add(
-                    egui::DragValue::new(ms)
-                        .range(0..=VIDEO_DELAY_MAX_MS)
-                        .suffix(" ms"),
-                );
-                ui.horizontal(|ui| {
-                    if let Some(s) = src.clone() {
-                        if ui.button("Apply").clicked() {
-                            actions.push((s.clone(), Some(*ms)));
+                let mut used = measure(ui, &time_s, nunito_x(14.0)) + sp;
+                used += match &tail {
+                    Tail::Countdown(s) => measure(ui, s, fredoka_bold(18.0)) + sp,
+                    Tail::Badge(s, _) => measure(ui, s, fredoka(13.0)) + 24.0 + sp,
+                    Tail::Hint(s) if s.is_empty() => 0.0,
+                    Tail::Hint(s) => measure(ui, s, theme::nunito(13.0)) + sp,
+                };
+                if host {
+                    if playing {
+                        if round_button(ui, Icon::Pause, true).clicked() {
+                            pause_clicked = true;
                         }
-                        if ui.button("Remove").clicked() {
-                            actions.push((s, None));
+                        used += 46.0 + sp;
+                    } else {
+                        if round_button(ui, Icon::Play, has_track).clicked() {
+                            play_clicked = true;
                         }
+                        used += 46.0 + sp;
                     }
-                });
-                ui.end_row();
-            }
-        });
-        for (s, ms) in actions {
-            match ms {
-                Some(m) => app.set_video_delay(s, m),
-                None => app.remove_video_delay(s),
-            }
-            app.save();
+                    let stop = FunButton::new("Stop", Kind::White)
+                        .small()
+                        .enabled(has_track);
+                    used += stop.measure(ui).x + sp;
+                    if ui.add(stop).clicked() {
+                        stop_clicked = true;
+                    }
+                    if playing {
+                        used += 74.0 + sp;
+                    }
+                } else {
+                    let t = "Your host presses play. Just sing along!";
+                    ui.label(RichText::new(t).font(fredoka(15.0)).color(INK_SOFT));
+                    used += measure(ui, t, fredoka(15.0)) + sp;
+                }
+                let w = (ui.available_width() - used).max(60.0);
+                let frac = if total > 0.0 {
+                    (pos / total) as f32
+                } else {
+                    0.0
+                };
+                let (resp, new) = progress_track(
+                    ui,
+                    w,
+                    frac,
+                    if host { CORAL } else { MINT },
+                    host && has_track,
+                );
+                if let Some(f) = new {
+                    let p = f as f64 * total;
+                    if resp.dragged() {
+                        want_seek = Some(-p - 1.0); // negative: dragging, not released
+                    }
+                    if resp.drag_stopped() || resp.clicked() {
+                        want_seek = Some(p);
+                    }
+                }
+                ui.label(RichText::new(&time_s).font(nunito_x(14.0)));
+                match &tail {
+                    Tail::Countdown(s) => {
+                        ui.label(RichText::new(s).font(fredoka_bold(18.0)));
+                    }
+                    Tail::Badge(s, c) => {
+                        pill(ui, s, *c, None);
+                    }
+                    Tail::Hint(s) if s.is_empty() => {}
+                    Tail::Hint(s) => {
+                        ui.label(soft(s.clone()));
+                    }
+                }
+                if host && playing && fun_button(ui, "Resync", Kind::Ghost).clicked() {
+                    resync_clicked = true;
+                }
+            });
+        },
+    );
+    let app = &mut g.app;
+    if play_clicked {
+        let from = app.paused_at;
+        let cd = app.cfg.countdown_s;
+        app.host_play(from, cd);
+    }
+    if pause_clicked {
+        app.pause();
+    }
+    if stop_clicked {
+        app.stop();
+    }
+    if resync_clicked {
+        app.resync();
+    }
+    match want_seek {
+        Some(p) if p < 0.0 => g.seek_drag = Some(-p - 1.0),
+        Some(p) => {
+            g.seek_drag = None;
+            g.app.seek(p as u64);
         }
-        for (s, ms) in &app.video_state {
-            ui.label(weak(format!(
-                "{s}: {}",
-                ms.map(|m| format!("{m} ms")).unwrap_or("no filter".into())
-            )));
-        }
-    });
+        None => {}
+    }
 }
 
-pub fn player(g: &mut Gui, ui: &mut egui::Ui) {
-    let app = &mut g.app;
-    card(ui, "Instrumental", |ui| {
-        ui.horizontal(|ui| {
-            if ui.button("Load WAV…").clicked() {
-                if let Some(p) = super::pick_wav() {
-                    app.load_track(p);
-                }
-            }
-            ui.label(weak("or drop a .wav file on the window"));
-        });
-        match &app.track {
-            Some(t) => {
-                egui::Grid::new("trk").num_columns(2).show(ui, |ui| {
-                    value(ui, "File", t.name.clone());
-                    value(ui, "Length", fmt_time(t.frames as f64, t.sample_rate));
-                    value(
-                        ui,
-                        "Format",
-                        format!("{} Hz, {} ch", t.sample_rate, t.channels),
-                    );
-                    value(ui, "SHA-256", format!("{}…", &t.sha256[..16]));
-                });
-            }
-            None => {
-                ui.label(weak(
-                    "No instrumental loaded. Both performers need the identical file.",
-                ));
-            }
-        }
-        let partner = match app.cfg.mode {
-            Mode::Host => app.guest_track_name.clone(),
-            Mode::Guest => app.host_track.as_ref().map(|t| t.name.clone()),
-        };
-        match app.track_matches() {
-            Some(true) => {
-                ui.label(RichText::new("Partner has the identical file").color(theme::OK));
-            }
-            Some(false) => {
-                ui.label(
-                    RichText::new(format!(
-                        "FAILED Partner's file differs ({})",
-                        partner.unwrap_or_default()
-                    ))
-                    .color(theme::ERR),
-                );
-            }
-            None if app.connected() => {
-                ui.label(weak("Partner has not loaded a file yet"));
-            }
-            None => {}
-        }
-    });
-    ui.add_space(8.0);
-    card(ui, "Playback timing", |ui| {
-        let mut changed = false;
-        ui.horizontal(|ui| {
-            ui.label("Volume");
-            changed |= ui
-                .add(egui::Slider::new(&mut app.cfg.volume, 0.0..=1.5))
-                .changed();
-        });
-        ui.horizontal(|ui| {
-            ui.label("Output latency trim");
-            changed |= ui.add(egui::DragValue::new(&mut app.cfg.output_latency_ms).range(-100.0..=500.0).suffix(" ms")).changed();
-        })
-        .response
-        .on_hover_text("Extra latency of your headphones not reported by Windows (e.g. Bluetooth ~ 150–250 ms). Positive values start the music earlier.");
-        changed |= ui
-            .checkbox(
-                &mut app.cfg.drift_correction,
-                "Gradual drift correction (±300 ppm resampling)",
-            )
-            .changed();
-        if app.cfg.mode == Mode::Host {
-            ui.horizontal(|ui| {
-                ui.label("Countdown");
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut app.cfg.countdown_s)
-                            .range(2.0..=15.0)
-                            .suffix(" s"),
-                    )
-                    .changed();
-                if ui
-                    .add_enabled(app.playing(), egui::Button::new("Resync now"))
-                    .clicked()
-                {
-                    app.resync();
-                }
-            });
-        }
-        if changed {
-            // Positive trim must make audio audible earlier: the core adds it to presentation time.
-            app.apply_render_settings();
-            app.save();
-        }
-        if let Some(r) = &app.render {
-            let st = r.shared.state();
-            egui::Grid::new("pb").num_columns(2).show(ui, |ui| {
-                value(ui, "State", format!("{st:?}"));
-                value(
-                    ui,
-                    "Local drift",
-                    format!(
-                        "{:+.2} ms",
-                        r.shared.drift_us.load(std::sync::atomic::Ordering::Relaxed) as f64
-                            / 1000.0
-                    ),
-                );
-                value(
-                    ui,
-                    "Underruns",
-                    r.shared
-                        .underruns
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                        .to_string(),
-                );
-                value(ui, "Output", r.description.clone());
-            });
-            if st == State::Playing
-                && app.cfg.mode == Mode::Host
-                && app.connected()
-                && app.sync_error_ms().is_none()
-            {
-                ui.label(weak("Waiting for guest playback report..."));
-            }
-        }
-    });
+// ------------------------------------------------------------------ welcome
+
+fn bullets(ui: &mut egui::Ui, items: [&str; 3]) {
+    ui.spacing_mut().item_spacing.y = 8.0;
+    for t in items {
+        check_row(ui, true, t);
+    }
 }
+
+pub fn welcome(g: &mut Gui, ui: &mut egui::Ui) {
+    let mut chosen = None;
+    egui::Frame::new()
+        .inner_margin(Margin::symmetric(28, 18))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                logo(ui, 28.0);
+                ui.label(RichText::new("DuetSync").font(fredoka_bold(26.0)));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(
+                        RichText::new("Sing together, anywhere.")
+                            .font(fredoka(14.0))
+                            .color(INK_SOFT),
+                    );
+                });
+            });
+        });
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.spacing_mut().item_spacing.y = 10.0;
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::vec2(112.0 + 100.0 - 8.0, 112.0),
+                    egui::Sense::hover(),
+                );
+                super::mascot::paint(
+                    ui.painter(),
+                    egui::Rect::from_min_size(rect.min, egui::vec2(112.0, 112.0)),
+                    Mode::Host,
+                    Mood::Happy,
+                    0.0,
+                    false,
+                );
+                super::mascot::paint(
+                    ui.painter(),
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect.min.x + 104.0, rect.min.y + 12.0),
+                        egui::vec2(100.0, 100.0),
+                    ),
+                    Mode::Guest,
+                    Mood::Happy,
+                    0.0,
+                    false,
+                );
+                ui.label(RichText::new("Who's singing today?").font(fredoka_bold(46.0)));
+                ui.label(
+                    RichText::new("Pick your role. You can switch any time.")
+                        .font(theme::nunito(16.0))
+                        .color(INK_SOFT),
+                );
+                let total_w = 360.0 * 2.0 + 26.0;
+                let pad = ((ui.available_width() - total_w) / 2.0).max(0.0);
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 26.0;
+                    ui.add_space(pad);
+                    for (host, fill) in [(true, CORAL_TINT), (false, MINT_TINT)] {
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(360.0, 10.0),
+                            Layout::top_down(Align::Min),
+                            |ui| {
+                                sticker_with(ui, fill, 26, Margin::same(22), 5, |ui| {
+                                    ui.spacing_mut().item_spacing.y = 12.0;
+                                    ui.set_min_height(206.0);
+                                    ui.label(
+                                        RichText::new(if host {
+                                            "I'm the host"
+                                        } else {
+                                            "I'm joining a friend"
+                                        })
+                                        .font(fredoka_bold(26.0)),
+                                    );
+                                    ui.label(
+                                        RichText::new(if host {
+                                            "I stream or record with OBS. My partner joins me."
+                                        } else {
+                                            "My partner sent me an invite. I just sing!"
+                                        })
+                                        .font(theme::nunito(15.0)),
+                                    );
+                                    bullets(
+                                        ui,
+                                        if host {
+                                            [
+                                                "Make an invite",
+                                                "Measure the Discord delay",
+                                                "Fix it in OBS with one click",
+                                            ]
+                                        } else {
+                                            ["Paste the invite", "Load the same song", "Sing along"]
+                                        },
+                                    );
+                                    let w = ui.available_width();
+                                    let b = FunButton::new(
+                                        if host {
+                                            "Let's host!"
+                                        } else {
+                                            "Join the duet!"
+                                        },
+                                        if host { Kind::Coral } else { Kind::Mint },
+                                    )
+                                    .min_width(w);
+                                    if ui.add(b).clicked() {
+                                        chosen = Some(if host { Mode::Host } else { Mode::Guest });
+                                    }
+                                });
+                            },
+                        );
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("You both need Discord, headphones and the same .wav song file.")
+                        .font(nunito_x(14.0))
+                        .color(INK_SOFT),
+                );
+                ui.add_space(16.0);
+            });
+        });
+    if let Some(m) = chosen {
+        g.choose_role(m);
+    }
+}
+
+// -------------------------------------------------------------- diagnostics
 
 pub fn diagnostics(g: &mut Gui, ui: &mut egui::Ui) {
     let app = &mut g.app;
-    card(ui, "Resources (this process, measured)", |ui| {
-        egui::Grid::new("res").num_columns(2).show(ui, |ui| {
+    ui.label(RichText::new("Diagnostics").font(fredoka_bold(32.0)));
+    ui.label(soft(
+        "Numbers for troubleshooting. Nothing here needs to be touched to sing.",
+    ));
+    card(ui, Some("Resources (this process, measured)"), |ui| {
+        egui::Grid::new("dres").num_columns(2).show(ui, |ui| {
             value(
                 ui,
                 "CPU",
@@ -934,17 +539,14 @@ pub fn diagnostics(g: &mut Gui, ui: &mut egui::Ui) {
             );
         });
     });
-    ui.add_space(8.0);
-    card(ui, "Network", |ui| {
+    card(ui, Some("Network"), |ui| {
         ui.label(RichText::new(app.network_summary()).monospace().size(12.0));
     });
-    ui.add_space(8.0);
-    card(ui, "Audio", |ui| {
+    card(ui, Some("Audio"), |ui| {
         ui.label(RichText::new(app.audio_summary()).monospace().size(12.0));
     });
-    ui.add_space(8.0);
-    card(ui, "Log", |ui| {
-        if ui.button("Export diagnostics").clicked() {
+    card(ui, Some("Log"), |ui| {
+        if small_button(ui, "Export diagnostics", Kind::White).clicked() {
             app.export_diagnostics();
         }
         egui::ScrollArea::vertical()
@@ -952,53 +554,71 @@ pub fn diagnostics(g: &mut Gui, ui: &mut egui::Ui) {
             .stick_to_bottom(true)
             .show(ui, |ui| {
                 for l in app.log.lines() {
-                    ui.label(RichText::new(l).monospace().size(11.5).color(theme::WEAK));
+                    ui.label(RichText::new(l).monospace().size(11.5).color(INK_SOFT));
                 }
             });
     });
-    let _ = Tab::Diagnostics;
+}
+
+// ------------------------------------------------------------------ dialogs
+
+fn modal_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(PAPER)
+        .stroke(Stroke::new(theme::STROKE_W, INK))
+        .corner_radius(egui::CornerRadius::same(22))
+        .inner_margin(Margin::same(22))
+        .shadow(egui::Shadow {
+            offset: [0, 5],
+            blur: 0,
+            spread: 0,
+            color: INK,
+        })
 }
 
 pub fn dialogs(g: &mut Gui, ctx: &egui::Context) {
     let app = &mut g.app;
     if app.pending_apply.is_some() {
         let mut decision = None;
-        egui::Modal::new(egui::Id::unique("confirm_apply")).show(ctx, |ui| {
-            ui.set_width(480.0);
-            ui.label(
-                RichText::new("Change OBS sync offsets?")
-                    .strong()
-                    .size(15.0),
-            );
-            let p = app.pending_apply.as_ref().unwrap();
-            egui::Grid::new("chg").num_columns(4).show(ui, |ui| {
-                for h in ["Input", "Original", "Now", "New"] {
-                    ui.label(weak(h));
+        egui::Modal::new(egui::Id::unique("confirm_apply"))
+            .frame(modal_frame())
+            .show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.label(RichText::new("Change OBS sync offsets?").font(fredoka_bold(22.0)));
+                let p = app.pending_apply.as_ref().unwrap();
+                egui::Grid::new("chg")
+                    .num_columns(4)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        for h in ["Input", "Original", "Now", "New"] {
+                            ui.label(soft(h));
+                        }
+                        ui.end_row();
+                        for c in &p.changes {
+                            ui.label(&c.input);
+                            ui.label(format!("{} ms", c.baseline_ms));
+                            ui.label(format!("{} ms", c.current_ms));
+                            ui.label(
+                                RichText::new(format!("{} ms", c.target_ms)).font(nunito_x(15.0)),
+                            );
+                            ui.end_row();
+                        }
+                    });
+                for n in &p.notes {
+                    check_row(ui, false, n);
                 }
-                ui.end_row();
-                for c in &p.changes {
-                    ui.label(&c.input);
-                    ui.label(format!("{} ms", c.baseline_ms));
-                    ui.label(format!("{} ms", c.current_ms));
-                    ui.label(RichText::new(format!("{} ms", c.target_ms)).strong());
-                    ui.end_row();
-                }
+                ui.label(soft(
+                    "Original values are saved. \"Restore original\" puts them back.",
+                ));
+                ui.horizontal(|ui| {
+                    if fun_button(ui, "Apply", Kind::Coral).clicked() {
+                        decision = Some(true);
+                    }
+                    if fun_button(ui, "Cancel", Kind::White).clicked() {
+                        decision = Some(false);
+                    }
+                });
             });
-            for n in &p.notes {
-                ui.label(RichText::new(n).color(theme::WARN));
-            }
-            ui.label(weak(
-                "Original values are saved; \"Restore original offsets\" puts them back.",
-            ));
-            ui.horizontal(|ui| {
-                if ui.button("Apply").clicked() {
-                    decision = Some(true);
-                }
-                if ui.button("Cancel").clicked() {
-                    decision = Some(false);
-                }
-            });
-        });
         match decision {
             Some(true) => app.confirm_apply(),
             Some(false) => app.pending_apply = None,
@@ -1007,20 +627,23 @@ pub fn dialogs(g: &mut Gui, ctx: &egui::Context) {
     }
     if app.confirm_restore {
         let mut decision = None;
-        egui::Modal::new(egui::Id::unique("confirm_restore")).show(ctx, |ui| {
-            ui.label(RichText::new("Restore original OBS offsets?").strong());
-            for (k, v) in &app.cfg.ledger.baseline {
-                ui.label(format!("{k} -> {v} ms"));
-            }
-            ui.horizontal(|ui| {
-                if ui.button("Restore").clicked() {
-                    decision = Some(true);
+        egui::Modal::new(egui::Id::unique("confirm_restore"))
+            .frame(modal_frame())
+            .show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.label(RichText::new("Restore original OBS offsets?").font(fredoka_bold(22.0)));
+                for (k, v) in &app.cfg.ledger.baseline {
+                    ui.label(format!("{k} -> {v} ms"));
                 }
-                if ui.button("Cancel").clicked() {
-                    decision = Some(false);
-                }
+                ui.horizontal(|ui| {
+                    if fun_button(ui, "Restore", Kind::Coral).clicked() {
+                        decision = Some(true);
+                    }
+                    if fun_button(ui, "Cancel", Kind::White).clicked() {
+                        decision = Some(false);
+                    }
+                });
             });
-        });
         if let Some(d) = decision {
             app.confirm_restore = false;
             if d {

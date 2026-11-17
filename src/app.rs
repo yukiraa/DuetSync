@@ -135,10 +135,26 @@ pub struct App {
     pub last_apply: Vec<ApplyResult>,
     pub video_state: BTreeMap<String, Option<i64>>,
     pub confirm_restore: bool,
+
+    // guided UI progress
+    /// Host: the last "Test partner's voice" heard audio.
+    pub guest_source_ok: bool,
+    /// Guest: the last "Test sound path" heard the test sound on the input.
+    pub routing_ok: bool,
+    /// Steps (1-based) the user confirmed with "Next".
+    pub confirmed_steps: std::collections::BTreeSet<u8>,
 }
 
 enum WorkerMsg {
-    Info(bool, String),
+    /// Result of a setup test: (which test, ok to show as success, test passed, message).
+    Tested(TestKind, bool, bool, String),
+}
+
+/// Which setup test the background worker is running (sets `guest_source_ok` / `routing_ok`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TestKind {
+    GuestCapture,
+    Routing,
 }
 
 impl App {
@@ -209,6 +225,9 @@ impl App {
             last_apply: vec![],
             video_state: BTreeMap::new(),
             confirm_restore: false,
+            guest_source_ok: false,
+            routing_ok: false,
+            confirmed_steps: Default::default(),
         };
         app.refresh_devices();
         app.join_input = app.cfg.host_address.clone();
@@ -941,8 +960,8 @@ impl App {
                 }
             })();
             let _ = tx.send(match r {
-                Ok(s) => WorkerMsg::Info(true, s),
-                Err(e) => WorkerMsg::Info(false, e),
+                Ok(s) => WorkerMsg::Tested(TestKind::Routing, true, true, s),
+                Err(e) => WorkerMsg::Tested(TestKind::Routing, false, false, e),
             });
         });
         self.worker_rx = Some(rx);
@@ -957,21 +976,26 @@ impl App {
         let (tx, rx) = channel();
         self.busy = Some("listening to guest audio for 3 s...".into());
         std::thread::spawn(move || {
-            let r = (|| -> Res<String> {
+            let r = (|| -> Res<(bool, String)> {
                 let mut cap = CaptureHandle::start(src)?;
                 let desc = cap.description.clone();
                 let rec = cap.record_until(now_us() + 3_000_000)?;
                 let peak = rec.samples.iter().fold(0f32, |a, v| a.max(v.abs()));
                 let db = 20.0 * peak.max(1e-9).log10();
                 Ok(if peak < 1e-4 {
-                    format!("{desc}: silence for 3 s — ask the guest to speak, or check the source")
+                    (
+                        false,
+                        format!(
+                            "{desc}: silence for 3 s — ask the guest to speak, or check the source"
+                        ),
+                    )
                 } else {
-                    format!("{desc}: audio present, peak {db:.1} dBFS")
+                    (true, format!("{desc}: audio present, peak {db:.1} dBFS"))
                 })
             })();
             let _ = tx.send(match r {
-                Ok(s) => WorkerMsg::Info(true, s),
-                Err(e) => WorkerMsg::Info(false, e),
+                Ok((pass, s)) => WorkerMsg::Tested(TestKind::GuestCapture, true, pass, s),
+                Err(e) => WorkerMsg::Tested(TestKind::GuestCapture, false, false, e),
             });
         });
         self.worker_rx = Some(rx);
@@ -989,10 +1013,18 @@ impl App {
             }
         }
         if let Some(rx) = &self.worker_rx {
-            if let Ok(WorkerMsg::Info(ok, s)) = rx.try_recv() {
+            if let Ok(m) = rx.try_recv() {
                 self.worker_rx = None;
                 self.busy = None;
-                self.info(ok, s);
+                match m {
+                    WorkerMsg::Tested(kind, ok, pass, s) => {
+                        match kind {
+                            TestKind::GuestCapture => self.guest_source_ok = pass,
+                            TestKind::Routing => self.routing_ok = pass,
+                        }
+                        self.info(ok, s);
+                    }
+                }
             }
         }
         if let Some(rx) = &self.guest_calib_rx {
