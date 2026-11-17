@@ -2,7 +2,15 @@
 
 Date: 2026-11-17. Machine: see [PERFORMANCE.md](PERFORMANCE.md).
 
-## Automated tests (`cargo test`): 46 passed, 0 failed
+## Automated tests (`cargo test`): 52 passed, 0 failed (v0.1.1)
+
+v0.1.1 adds the following tests:
+- handshake flood cap;
+- expired code rejected for new guests while a joined guest resumes;
+- reconnect after "New code";
+- 10 s late start with a 2 s buffer requests a re-seek instead of over-reporting;
+- OBS connection drop mid-apply reports every input;
+- ledger recorded before a failed write keeps the original baseline.
 
 | Area | Tests |
 | --- | --- |
@@ -37,6 +45,7 @@ process, connected over 127.0.0.1, with test signals and both players routed to 
 | Calibration, `--no-ref` (scheduled times) | 8/8, **12.05 ms ±0.99 ms**, jitter 0.74 ms (the cable's own latency) |
 | Instrumental identity | SHA-256 verified on both sides |
 | Synchronized playback | guest-vs-host timeline over ~650 samples: mean −0.06…+0.15 ms, p95 0.55–0.88 ms, worst ≤ 1.02 ms |
+| Re-anchored start (50 ms countdown, v0.1.1) | worst 0.76–1.20 ms over ~326 samples |
 
 Bug found and fixed by these hardware runs: loopback and virtual devices deliver **no
 packets while silent**. Captured samples were concatenated, so time was lost and later

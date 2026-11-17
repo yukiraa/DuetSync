@@ -16,6 +16,11 @@
 - Without the guest's reference input, the measurement includes the guest's
   speaker→microphone acoustic delay (≈ 1 ms per 34 cm) and any unreported output latency.
 - Network ping is shown for information only. It is never used as the audio latency.
+- The measured latency is in the time base of the host's capture tap. "Discord app"
+  (process loopback) taps the same stream that OBS Application Audio Capture uses.
+  "Output device" loopback taps later, after the device buffer, so it can over-delay the
+  other OBS sources by a few to tens of ms. Prefer "Discord app", and verify with a clap
+  test.
 
 ## Clock and playback
 
@@ -31,8 +36,9 @@
 ## Networking
 
 - LAN or private VPN only: no NAT traversal, relay, or room codes. Use Tailscale or similar.
-- The transport is authenticated and encrypted with a key derived from the 128-bit join
-  code. Anyone holding the invite can join until it expires (reconnects stay allowed).
+- The transport is authenticated and encrypted with keys derived from the 128-bit join
+  code. The code admits new guests only until it expires. After joining, a guest reconnects
+  with a per-session resume credential, so expiry or "New code" doesn't drop them.
 - Exactly two performers.
 
 ## OBS and video
@@ -47,6 +53,7 @@
 - Windows only. Process loopback needs Windows 10 2004+.
 - No system tray icon. Minimizing reduces the app to ~1 Hz logic with no rendering, so it
   stays responsive to session commands.
-- GUI private working set measured at 44–49 MB on an NVIDIA OpenGL system, above the
-  40 MB target. Most of it is the GPU driver.
+- GUI private working set measured at 43.6–49 MB on an NVIDIA OpenGL system, above the
+  40 MB target. Most of it is the GPU driver. The wgpu renderer was tried and was worse
+  (138 MB default, 310 MB DX12 low-power).
 - Unsigned executable: SmartScreen may warn.

@@ -1,26 +1,25 @@
 # DuetSync progress (session recovery)
 
-## Status: MVP implemented (2026-11-17). Real two-computer testing PENDING.
+## Status: v0.1.1 (2026-11-17). Real two-computer testing PENDING.
 
-Gate: `cargo fmt --check` clean, `cargo clippy --all-targets` 0 warnings, `cargo test` 46/46.
-Release: `target\release\DuetSync.exe` (5,245,952 bytes); packaged in
-`dist\DuetSync-0.1.0-win64\` and `dist\DuetSync-0.1.0-win64.zip`.
+Gate: `cargo fmt --check` clean, `cargo clippy --all-targets` 0 warnings, `cargo test` 52/52.
+Release: `target\release\DuetSync.exe` 5,300,224 bytes; packaged in `dist\DuetSync-0.1.1-win64(.zip)`.
+Git repo (local only, branch `main`). Coordination: TASKS.md, AGENT_LOG.md, briefs/.
 
-## Done
-- Core: calibration DSP, playback core (scheduled start, drift correction), WASAPI capture/render,
-  timestamp re-gridding for silent devices, encrypted host/guest session, clock sync, OBS client,
-  compensation ledger, config, diagnostics.
-- `src/app.rs` controller + `src/ui/` egui GUI (tick runs in `App::logic`, so it also works minimized).
-- Hardware: `--selftest`, `--cable-test`, `--e2e [--no-ref]` all PASS on this PC (VB-CABLE).
-- Docs: README, docs/{ARCHITECTURE,OBS_ROUTING,TROUBLESHOOTING,PERFORMANCE,TEST_REPORT,LIMITATIONS}.md,
-  LICENSE, CHANGELOG, THIRD_PARTY_NOTICES, CLAUDE.md, AGENTS.md, DuetSync.example.json.
+## Multi-agent setup
+- Codex: Codex app's CLI `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` (0.167.0-alpha.3.2,
+  ChatGPT login). Claude Code Codex plugin NOT installed; run via `tools/run-codex.ps1`.
+  Working models: `gpt-reserve` (audit), `gpt-5.6-terra` (implementation). `gpt-6-astra`
+  is rejected for ChatGPT accounts. The Codex sandbox has no crates.io access and can't
+  measure the GUI.
+- Claude subagents: Sonnet (`general-purpose`, model sonnet), `light-worker` (mechanical).
 
-## Open
-- Real two-computer checklist (docs/TEST_REPORT.md).
-- GUI private working set 44–49 MB > 40 MB target (NVIDIA OpenGL driver).
-- No tray icon; WAV only; LAN/VPN only.
+## Hardware results on this PC
+selftest PASS; E2E PASS (playback worst 0.83 ms, re-anchored start 0.76 ms);
+idle CPU 0.021 % visible / 0.005 % minimized; private WS 43.6 MB (target 40 MB missed).
 
 ## Gotchas
-- PowerShell 5.1 `Get-Content -Raw` corrupts UTF-8: use Edit tool or `[IO.File]` + UTF8.
-- Loopback/virtual capture devices send no packets during silence; keep `audio::regrid`.
-- eframe 0.37: `App::ui` is skipped while minimized; periodic work belongs in `App::logic`.
+- PowerShell 5.1 `Get-Content -Raw` corrupts UTF-8: use Edit or `[IO.File]` + UTF8.
+- Loopback/virtual capture sends no packets during silence; keep `audio::regrid`.
+- eframe 0.37: `ui` is skipped while minimized; periodic work lives in `App::logic`.
+- PlayInfo has protocol `gen` and local ring `local_gen`; Retime uses `local_gen`.

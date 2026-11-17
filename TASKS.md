@@ -1,17 +1,21 @@
 # Tasks
 
-Owner key: **CX** = OpenAI Codex CLI (`codex exec`), **OP** = Claude Opus (lead),
-**SN** = Claude Sonnet subagent, **HK** = Claude Haiku-class subagent (`light-worker`).
-Only one writer per file set at a time. Status: todo / doing / done / blocked.
+Owner key: **CX** = OpenAI Codex CLI (`codex exec`, via `tools/run-codex.ps1`),
+**OP** = Claude Opus (lead), **SN** = Claude Sonnet subagent, **HK** = `light-worker`
+subagent (cheap model). One writer per file set at a time. Details per run: AGENT_LOG.md.
 
-| ID | Owner | Task | Files owned | Status |
-| --- | --- | --- | --- | --- |
-| T0 | OP | Codex availability check, git baseline, task files | TASKS.md, AGENT_LOG.md, .gitignore | done |
-| T1 | CX (gpt-reserve) | Adversarial audit: timing, DSP, clock sync, audio-thread safety, races, OBS restore, auth (read-only) | none (report only) | doing |
-| T2 | CX (gpt-5.6-terra) | GUI private working set < 40 MB without a dedicated-GPU requirement; keep idle CPU < 0.2 % | src/ui/mod.rs, src/ui/theme.rs, Cargo.toml | doing |
-| T3 | CX | Fix verified critical/high findings from T1 (systems files) | assigned after triage | todo |
-| T4 | SN | Fix verified app/OBS/UI findings from T1; tray icon if cheap | src/app.rs, src/ui/panels.rs, src/obs/* | todo |
-| T5 | HK | Update TEST_REPORT, PERFORMANCE, CHANGELOG, dist package | docs/*, CHANGELOG.md, dist/ | todo |
-| T6 | OP | Integration gate: fmt, clippy, test, release, selftest/e2e, perf | none | todo |
+| ID | Owner | Task | Status |
+| --- | --- | --- | --- |
+| T0 | OP | Codex availability check, git baseline, task files | done |
+| T1 | CX gpt-reserve | Adversarial audit (read-only): 6 findings, all verified | done |
+| T2 | CX gpt-5.6-terra | GUI memory < 40 MB | blocked in sandbox; OP continued (wgpu worse); target still missed |
+| T3 | CX gpt-5.6-terra | Pre-auth cap, resumable auth, bounded late-start re-seek | done (+ OP integration fixes) |
+| T4 | SN | OBS partial-apply safety | done |
+| T5 | HK | Docs, changelog, dist 0.1.1 | doing |
+| T6 | OP | Gate: fmt, clippy, 52 tests, release, selftest/e2e, perf | done |
 
-Out of scope (needs hardware/people): real two-computer checklist in docs/TEST_REPORT.md.
+## Open
+- Real two-computer checklist (docs/TEST_REPORT.md). Needs a second PC and a partner.
+- Private working set 43.6 MB vs the 40 MB target (OpenGL driver). Candidates: software
+  renderer, or running on an integrated GPU.
+- Not implemented: tray icon, non-WAV formats, NAT traversal, automatic video calibration.

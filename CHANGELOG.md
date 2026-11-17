@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1 (2026-11-17), audit fixes
+
+Independent audit by OpenAI Codex (gpt-reserve); fixes by Codex (gpt-5.6-terra), Claude Sonnet and Claude Opus. See AGENT_LOG.md.
+
+### Fixed
+- Host caps concurrent unauthenticated handshakes at 4 (LAN connection flooding).
+- Join codes now really expire: after the first join, the guest reconnects with a per-session resume credential. New joins with an expired or rotated code are rejected, and "New code" no longer breaks reconnects.
+- Late or large re-sync skips no longer drain the 2 s buffer while still reporting a sync position. The player re-seeks on the shared timeline instead.
+- A short countdown or a late Play message re-anchors the start 500 ms ahead on the same musical timeline.
+- OBS: original offsets are recorded before writing. A connection drop mid-apply can no longer orphan a change or stack compensation, and every input's result is reported.
+- The invite "Copy" button now works (eframe clipboard feature).
+- Session shutdown race that could leave a link running.
+
 ## 0.1.0 (2026-11-17), first MVP
 
 ### Added
