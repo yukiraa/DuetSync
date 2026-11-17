@@ -73,14 +73,14 @@ impl Step {
 
     pub fn blurb(self) -> &'static str {
         match self {
-            Step::HostConnect => "Your partner needs this invite to join. Works on the same Wi-Fi, or over Tailscale if you live far apart.",
+            Step::HostConnect => "Send this invite to your partner. It works from anywhere, nothing to install.",
             Step::HostAudio => "Pick your headphones and microphone, and tell DuetSync where your partner's voice comes out.",
             Step::GuestAudio => "Pick your headphones, then check that the test sound can reach your microphone.",
             Step::Song => "You both use the exact same song: an instrumental .wav file, or a YouTube link.",
             Step::Measure => "We play little test sounds on your partner's PC and time how late they reach you through Discord. Takes about 15 seconds. Shhh while it runs!",
             Step::Obs => "Connect OBS, then send the measured delay so your recording lines up.",
             Step::Sing => "Everything is ready. Time to sing!",
-            Step::GuestJoin => "Your host made a session and sent you an invite. It looks like 100.64.1.2:47800#ABCDE-...",
+            Step::GuestJoin => "Paste the invite your host sent you and press Join. Works from anywhere.",
             Step::GuestReady => "Your host measures how late your voice arrives through Discord. Get Discord ready first.",
         }
     }
@@ -329,11 +329,9 @@ fn host_connect(g: &mut Gui, ui: &mut Ui) {
     }
     card(ui, Some("Your invite"), |ui| {
         if let Some(code) = app.join_code.clone() {
-            let invites: Vec<String> = app
-                .invite_hosts
-                .iter()
-                .map(|h| format!("{h}#{code}"))
-                .collect();
+            // One invite for everyone: same-Wi-Fi addresses (direct) + the code (which also
+            // opens the internet path). The guest tries them all automatically.
+            let invites: Vec<String> = vec![format!("{}#{code}", app.invite_hosts.join(","))];
             for (k, invite) in invites.iter().enumerate() {
                 ui.horizontal(|ui| {
                     let copied = now < g.copied_until;
@@ -393,46 +391,32 @@ fn host_connect(g: &mut Gui, ui: &mut Ui) {
     }
 }
 
-/// Host-side "partner can't join?" checklist with what DuetSync actually observed.
+/// Host status in one or two plain lines (no setup instructions: internet mode needs none).
 fn host_join_help(app: &App, ui: &mut Ui) {
-    let has_vpn = app.invite_hosts.iter().any(|h| h.starts_with("100."));
-    card(ui, Some("Partner can't join?"), |ui| {
+    use crate::network::internet::NetStatus;
+    card(ui, None, |ui| {
+        match app.internet_status() {
+            Some(NetStatus::Ready) | Some(NetStatus::Connected(_)) => check_row(
+                ui,
+                true,
+                "Ready: your partner can join from anywhere. Just send them the invite.",
+            ),
+            Some(NetStatus::Failed(why)) => check_row(ui, false, &why),
+            _ => check_row(
+                ui,
+                true,
+                "Getting ready... you can already send the invite.",
+            ),
+        }
         if let Some((why, at)) = &app.join_problem {
-            let ago = (now_us() - at) / 1_000_000;
-            if ago < 600 {
+            if (now_us() - at) / 1_000_000 < 600 {
                 check_row(
                     ui,
                     false,
-                    &format!(
-                        "Someone tried to join {ago} s ago and was refused: {}",
-                        plain_refusal(why)
-                    ),
+                    &format!("Someone couldn't join: {}", plain_refusal(why)),
                 );
             }
         }
-        check_row(
-            ui,
-            has_vpn,
-            if has_vpn {
-                "Tailscale found: if you live apart, send the invite that starts with 100."
-            } else {
-                "Not in the same house? The invite above only works on the same Wi-Fi/router. For far away, install Tailscale (free) on both PCs, log in to the same account network, then press New code."
-            },
-        );
-        match app.public_network {
-            Some(true) => check_row(
-                ui,
-                false,
-                "Windows calls your network \"Public\", which blocks incoming connections. Set it to Private (Settings, Network, your connection, Private), or allow DuetSync in Windows Firewall for Public networks.",
-            ),
-            Some(false) => check_row(ui, true, "Network is Private: Windows lets your partner in."),
-            None => {}
-        }
-        check_row(
-            ui,
-            true,
-            "Both of you must run the same DuetSync version, and paste the whole invite (address#code).",
-        );
     });
 }
 
@@ -1677,9 +1661,7 @@ fn guest_join(g: &mut Gui, ui: &mut Ui) {
                     app.save();
                 }
             });
-            ui.label(soft(
-                "Can't connect? You both need the same Wi-Fi, or Tailscale on both PCs. If the invite is old, ask your host for a new one.",
-            ));
+            ui.label(soft("If it doesn't work, ask your host for a new invite."));
         });
         return;
     }
@@ -1713,19 +1695,14 @@ fn guest_join(g: &mut Gui, ui: &mut Ui) {
     // Live connection report: what is actually happening, in plain words.
     if !app.connected() {
         if let Some(st) = app.guest.as_ref().map(|g| g.join_status()) {
-            card(ui, Some("What's happening"), |ui| {
-                ui.label(soft(format!(
-                    "Trying {} for {:.0} s ({} failed tries, retrying every 2 s).",
-                    st.host, st.seconds, st.failed_attempts
-                )));
-                if let Some(err) = &st.last_error {
-                    check_row(ui, false, crate::diagnostics::explain_join_error(err));
+            use crate::network::internet::NetStatus;
+            card(ui, None, |ui| {
+                match app.internet_status() {
+                    Some(NetStatus::Failed(why)) => check_row(ui, false, &why),
+                    Some(s) => check_row(ui, true, &s.text()),
+                    None => {}
                 }
-                if st.failed_attempts >= 2 {
-                    check_row(ui, false, "Far apart? An invite starting with 192.168. or 10. only works on the same Wi-Fi. Use Tailscale on both PCs and ask for an invite that starts with 100.");
-                    check_row(ui, false, "Host's PC: Windows network set to Private, or DuetSync allowed in Windows Firewall.");
-                    check_row(ui, false, "Your host has DuetSync open with a session created, and you both run the same version.");
-                }
+                ui.label(soft(format!("Trying for {:.0} s...", st.seconds)));
             });
         }
     }

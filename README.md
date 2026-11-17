@@ -30,9 +30,21 @@ modification, no audio driver to install.
   `.wav` file. Convert MP3s to WAV with any audio tool; both people must use the very same
   WAV file.
 - Host only: OBS Studio 28+ (it includes obs-websocket 5).
-- A network path between the two PCs: the same LAN, or a private VPN such as
-  [Tailscale](https://tailscale.com) (free for personal use). Do **not** port-forward DuetSync
-  to the public internet.
+- Internet on both PCs. Nothing else: no VPN, no router settings, no port forwarding.
+
+### How joining works (and what it shares)
+
+The invite works on the same Wi-Fi **and** from another house:
+- **Same Wi-Fi:** DuetSync connects directly.
+- **Different networks:** each PC asks Google's public STUN server for its public internet
+  address. The two PCs swap these addresses through the free **ntfy.sh** relay, then open a
+  direct connection through both routers ("hole punching").
+- **What the helpers see:** the relay only ever stores **encrypted** data, and the music
+  sync never goes through it. Both services can see your IP address, like any website you
+  visit.
+- **When it can't connect:** very strict networks (some mobile data and carrier-grade NAT)
+  can't be punched through. DuetSync then says so; try a phone hotspot or another Wi-Fi
+  on one side.
 
 ## Install
 
@@ -185,7 +197,7 @@ See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). Quick checks:
 
 | Symptom | Fix |
 | --- | --- |
-| Guest can't connect | Same LAN/Tailscale? Firewall prompt allowed on host? Invite pasted completely? |
+| Guest can't connect | Both on the same DuetSync version? Whole invite pasted? Read the status line on the join screen: it says what's wrong. |
 | "join code expired" | Host presses **New code** and sends the new invite. |
 | Calibration rejected, 0 signals | Guest's Krisp/echo cancellation on, wrong calibration output, or test routing failed. |
 | "Partner's file differs" | Not the same WAV (re-exported files differ). Send the exact file. |

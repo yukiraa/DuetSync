@@ -83,6 +83,10 @@ impl Gui {
                 if mode == Mode::Host && std::env::var_os("DUETSYNC_PREVIEW_YT").is_some() {
                     g.app.set_youtube("dQw4w9WgXcQ");
                 }
+                // `DUETSYNC_PREVIEW_SESSION=1`: the host creates a session (real, not faked).
+                if mode == Mode::Host && std::env::var_os("DUETSYNC_PREVIEW_SESSION").is_some() {
+                    g.app.start_host();
+                }
                 // `DUETSYNC_PREVIEW_JOIN=<invite>`: the guest starts joining that invite
                 // (used to screenshot the connection help).
                 if mode == Mode::Guest {

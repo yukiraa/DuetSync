@@ -2,8 +2,11 @@
 
 pub mod clocksync;
 pub mod crypto;
+#[cfg(windows)]
+pub mod internet;
 pub mod protocol;
 pub mod session;
+pub mod upnp;
 
 pub use protocol::{Msg, DEFAULT_PORT};
 pub use session::{Event, Guest, GuestConfig, Host, HostConfig};

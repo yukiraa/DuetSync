@@ -102,7 +102,11 @@ mod e2e {
         let mut host = App::with_config(host_cfg, false);
         host.start_host();
         // `--lan`: join through the real network address shown in the invite (not loopback).
-        let addr = if args.iter().any(|a| a == "--lan") {
+        // `--internet`: code-only invite, so the guest can only come in through the
+        // internet tunnel (STUN + ntfy.sh relay + hole punching).
+        let addr = if args.iter().any(|a| a == "--internet") {
+            String::new()
+        } else if args.iter().any(|a| a == "--lan") {
             host.invite_hosts
                 .first()
                 .cloned()
@@ -129,7 +133,23 @@ mod e2e {
         // 1. Session + clock sync
         let join_t0 = Instant::now();
         let mut connected_at = None;
-        let ok = pump(&mut host, &mut guest, 10.0, |h, g| {
+        let join_budget = if args.iter().any(|a| a == "--internet") {
+            60.0
+        } else {
+            10.0
+        };
+        let mut last_print = Instant::now();
+        let ok = pump(&mut host, &mut guest, join_budget, |h, g| {
+            if last_print.elapsed().as_secs() >= 3 {
+                last_print = Instant::now();
+                println!(
+                    "  [{:>4.0}s] host: {:?} | guest: {:?} | guest join: {:?}",
+                    join_t0.elapsed().as_secs_f64(),
+                    h.internet_status(),
+                    g.internet_status(),
+                    g.guest.as_ref().map(|x| x.join_status().last_error)
+                );
+            }
             if connected_at.is_none() && g.connected() {
                 connected_at = Some(join_t0.elapsed());
             }
@@ -281,6 +301,17 @@ mod imp {
     pub fn run(args: &[String]) -> i32 {
         if args.iter().any(|a| a == "--e2e") {
             return super::e2e::run(args);
+        }
+        if args.iter().any(|a| a == "--relay-test") {
+            println!("{:?}", crate::network::internet::signal::relay_selftest());
+            return 0;
+        }
+        if args.iter().any(|a| a == "--upnp-probe") {
+            match crate::network::upnp::probe() {
+                Ok(ip) => println!("UPNP OK: router reachable, public address {ip}"),
+                Err(e) => println!("UPNP NOT AVAILABLE: {e}"),
+            }
+            return 0;
         }
         if let Some(i) = args.iter().position(|a| a == "--video-test") {
             return video_test(args.get(i + 1).map(String::as_str).unwrap_or(""));

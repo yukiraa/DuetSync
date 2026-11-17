@@ -35,7 +35,7 @@
 
 ## Networking
 
-- LAN or private VPN only: no NAT traversal, relay, or room codes. Use Tailscale or similar.
+- Internet joining uses hole punching with free public helpers (Google STUN, ntfy.sh relay for the encrypted address exchange). Very strict networks (some mobile data / carrier-grade NAT on both sides) cannot be punched; there is no fallback relay for the session itself. If ntfy.sh or STUN is down, only same-Wi-Fi joining works.
 - The transport is authenticated and encrypted with keys derived from the 128-bit join
   code. The code admits new guests only until it expires. After joining, a guest reconnects
   with a per-session resume credential, so expiry or "New code" doesn't drop them.

@@ -4,11 +4,11 @@
 
 | Message / symptom | Cause and fix |
 | --- | --- |
-| `cannot reach host …` | Wrong address, PCs not on the same LAN/VPN, or the host's Windows Firewall blocked DuetSync. On the host, allow DuetSync for **Private** networks (Windows Defender Firewall → Allow an app). Check that both Tailscale clients are online. |
+| `cannot reach host …` | Only shown for the same-Wi-Fi path; the internet path is tried at the same time. Read the join screen's status line. If it says the networks are too strict, try a phone hotspot on one side. |
 | `invalid join code` | Code mistyped or regenerated. Paste the full invite `ip:port#CODE`. |
 | `join code expired` | New joins are refused after the validity time. Host: **New code**. |
 | `protocol version mismatch` | Both people need the same DuetSync version. |
-| `peer timed out (no heartbeat for 5 s)` | Network dropped. The guest reconnects automatically (backoff up to 5 s). |
+| `peer timed out (no heartbeat for 5 s)` | Network dropped. The guest reconnects automatically (retries every 2 s at most). |
 | Clock uncertainty > 10 ms | Busy or asymmetric network. Wait 20–30 s; it improves as the fastest exchanges accumulate. Wi-Fi with power saving is a common cause. |
 
 ## Calibration

@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.0 (2026-11-17), join from anywhere, nothing to install
+
+### Added
+- Internet joining with just the invite: no VPN, no router setup, nothing installed.
+  - Each PC learns its public address from public STUN servers.
+  - The two PCs swap addresses through the free ntfy.sh relay, encrypted with a key from the
+    join code.
+  - They open a direct path through both routers (UDP hole punching).
+  - The existing encrypted session runs through that path unchanged.
+- The same invite also connects directly on the same Wi-Fi; the guest tries every path at once.
+- `--selftest --e2e --internet` (code-only invite through the real relay and tunnel) and
+  `--selftest --relay-test`.
+
+### Changed
+- The host's step 1 shows one invite, one Copy button and one status line.
+- The guest join screen shows one plain status line.
+- No more Tailscale or firewall instructions.
+
+### Measured (one PC, real STUN + ntfy.sh + tunnel)
+- Joining over the internet path, two runs: connected after 1.5 s and 3.3 s, ready after 2.0 s
+  and 4.1 s. Tunnel round trip 0.30 to 0.47 ms; clock offset 0.04 to 0.05 ms (uncertainty ±0.14
+  to ±0.18 ms).
+- Calibration -0.04 / -0.05 ms (valid); playback worst 0.96 / 0.97 ms (release build).
+- Not yet tested between two different home networks.
+
 ## 0.3.1 (2026-11-17), joining fixes
 
 ### Fixed

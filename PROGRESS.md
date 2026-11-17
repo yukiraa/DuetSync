@@ -1,9 +1,21 @@
 # DuetSync progress (session recovery)
 
-## Status: v0.1.1 (2026-11-17). Real two-computer testing PENDING.
+## Status: v0.4.0 (2026-11-17). Real two-computer testing PENDING.
 
-Gate: `cargo fmt --check` clean, `cargo clippy --all-targets` 0 warnings, `cargo test` 52/52.
-Release: `target\release\DuetSync.exe` 5,300,224 bytes; packaged in `dist\DuetSync-0.1.1-win64(.zip)`.
+Gate: `cargo fmt --check` clean, `cargo clippy --all-targets` 0 warnings, `cargo test` 79/79.
+Release: packaged in `dist\DuetSync-0.4.0-win64(.zip)`.
+Agent routing: Opus only (user request); no Codex, no subagents.
+
+## Internet mode (0.4.0)
+- `src/network/internet/`: stun.rs (public addr), signal.rs (ntfy.sh topic from HMAC of secret,
+  records sealed ChaCha20-Poly1305, subscribe `since=all`), https.rs (WinHTTP; call
+  QueryDataAvailable before ReadData), tunnel.rs (HMAC-tagged UDP, reliable stream, epochs,
+  event-driven pump with TCP reader thread), mod.rs (InternetHost / InternetGuest).
+- Guest session connects to the local bridge (127.0.0.1) via `Guest::set_extra`; session code
+  unchanged. Invite = `hosts#code`; code-only works over the internet.
+- Router here has UPnP off (`--upnp-probe`); UPnP code is probe-only.
+- Untested: two different home networks, symmetric NAT / CGNAT.
+- Checks: `--selftest --e2e --internet`, `--selftest --relay-test`.
 Git repo (local only, branch `main`). Coordination: TASKS.md, AGENT_LOG.md, briefs/.
 
 ## Multi-agent setup

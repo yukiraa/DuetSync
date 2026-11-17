@@ -560,6 +560,7 @@ struct GuestShared {
     attempts: AtomicU64,
     last_error: Mutex<Option<String>>,
     started_us: i64,
+    extra: Mutex<Vec<SocketAddr>>,
 }
 
 /// What the guest's connection loop is doing, for the join screen.
@@ -581,8 +582,31 @@ pub struct Guest {
 }
 
 impl Guest {
+    /// `cfg.host` may hold several comma-separated addresses, or be empty (internet-only
+    /// join: the tunnel's local bridge is added later with `set_extra`).
     pub fn start(cfg: GuestConfig) -> Result<Self, String> {
-        let addr = resolve(&cfg.host)?;
+        let mut addrs = Vec::new();
+        let mut bad = None;
+        for part in cfg.host.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+            match resolve(part) {
+                Ok(a) => addrs.push(a),
+                Err(e) => bad = Some(e),
+            }
+        }
+        if addrs.is_empty() {
+            if let Some(e) = bad {
+                return Err(e);
+            }
+        }
+        let host_label = if addrs.is_empty() {
+            "your host over the internet".to_string()
+        } else {
+            addrs
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
         let (etx, erx) = sync_channel::<Event>(512);
         let shared = Arc::new(GuestShared {
             out: Mutex::new(None),
@@ -592,18 +616,28 @@ impl Guest {
             attempts: AtomicU64::new(0),
             last_error: Mutex::new(None),
             started_us: now_us(),
+            extra: Mutex::new(Vec::new()),
         });
         let sh = shared.clone();
         let thread = thread::Builder::new()
             .name("duetsync-guest".into())
-            .spawn(move || guest_loop(addr, cfg.secret, sh, etx))
+            .spawn(move || guest_loop(addrs, cfg.secret, sh, etx))
             .map_err(|e| e.to_string())?;
         Ok(Self {
             shared,
             events: erx,
-            host: addr.to_string(),
+            host: host_label,
             thread: Some(thread),
         })
+    }
+
+    /// Extra addresses tried first (e.g. the internet tunnel's local bridge once it is up).
+    pub fn set_extra(&self, addrs: Vec<SocketAddr>) {
+        if let Ok(mut g) = self.shared.extra.lock() {
+            if *g != addrs {
+                *g = addrs;
+            }
+        }
     }
 
     pub fn send(&self, m: Msg) -> bool {
@@ -726,22 +760,59 @@ impl Credential {
     }
 }
 
-fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: SyncSender<Event>) {
+fn guest_loop(
+    addrs: Vec<SocketAddr>,
+    secret: [u8; 16],
+    sh: Arc<GuestShared>,
+    events: SyncSender<Event>,
+) {
     let mut backoff = Duration::from_millis(500);
     let mut first = true;
     let join_secret = secret;
     let mut credential = Credential::Join(secret);
     while !sh.stop.load(Ordering::Acquire) {
+        // Tunnel bridge (if up) first, then the invite's direct addresses.
+        let mut candidates: Vec<SocketAddr> =
+            sh.extra.lock().map(|g| g.clone()).unwrap_or_default();
+        candidates.extend(addrs.iter().copied());
+        if candidates.is_empty() {
+            // Internet-only join: wait for the tunnel to come up (not a failure).
+            thread::sleep(Duration::from_millis(250));
+            continue;
+        }
         let attempt = (|| -> Result<_, String> {
-            let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
-                .map_err(|e| format!("cannot reach host {addr}: {e}"))?;
-            let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-            let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
-            let (tx_seal, rx_seal, resume) = guest_handshake(&mut s, credential.as_slice())?;
-            Ok((s, tx_seal, rx_seal, resume))
+            let mut last = String::new();
+            for addr in &candidates {
+                let timeout = if addr.ip().is_loopback() {
+                    Duration::from_millis(500)
+                } else {
+                    Duration::from_secs(2)
+                };
+                let mut s = match TcpStream::connect_timeout(addr, timeout) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        last = format!("cannot reach host {addr}: {e}");
+                        continue;
+                    }
+                };
+                let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
+                match guest_handshake(&mut s, credential.as_slice()) {
+                    Ok((tx_seal, rx_seal, resume)) => return Ok((s, tx_seal, rx_seal, resume)),
+                    // Auth answers are definitive, whichever path delivered them.
+                    Err(e) if e.contains("join code") || e.contains("version") => return Err(e),
+                    Err(e) => last = e,
+                }
+            }
+            Err(last)
         })();
         match attempt {
             Ok((s, tx_seal, rx_seal, resume)) => {
+                let via = match s.peer_addr() {
+                    Ok(a) if a.ip().is_loopback() => "your host (over the internet)".to_string(),
+                    Ok(a) => a.to_string(),
+                    Err(_) => "your host".to_string(),
+                };
                 credential = Credential::Resume(resume);
                 backoff = Duration::from_millis(500);
                 sh.attempts.store(0, Ordering::Relaxed);
@@ -771,7 +842,7 @@ fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: 
                             let _ = otx.try_send(Out::Msg(Msg::Bye));
                             let _ = otx.try_send(Out::Close);
                         }
-                        let _ = events.try_send(Event::Connected(addr.to_string()));
+                        let _ = events.try_send(Event::Connected(via.clone()));
                         let reason = reader.join().unwrap_or_else(|_| "link panicked".into());
                         *sh.out.lock().unwrap() = None;
                         let _ = events.try_send(Event::Disconnected(reason));

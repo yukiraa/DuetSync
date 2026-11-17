@@ -225,6 +225,10 @@ pub struct App {
     pub join_problem: Option<(String, i64)>,
     /// Host: Windows says a connected network is "Public" (firewall blocks more).
     pub public_network: Option<bool>,
+    /// Internet joining (hole-punched tunnel). Host keeps the previous code's listener too,
+    /// so a guest who joined with it can still reconnect after New code.
+    inet_hosts: Vec<crate::network::internet::InternetHost>,
+    inet_guest: Option<crate::network::internet::InternetGuest>,
 
     // live auto-sync
     live: Option<LiveRun>,
@@ -336,6 +340,8 @@ impl App {
             confirmed_steps: Default::default(),
             join_problem: None,
             public_network: None,
+            inet_hosts: Vec::new(),
+            inet_guest: None,
             live: None,
             live_starting: None,
             live_retry_us: 0,
@@ -404,8 +410,24 @@ impl App {
 
     /// Poll all channels. Call once per UI frame. Returns true when something is active
     /// that warrants a faster repaint.
+    /// Status of internet joining for the UI (host: newest listener; guest: the tunnel).
+    pub fn internet_status(&self) -> Option<crate::network::internet::NetStatus> {
+        match self.cfg.mode {
+            Mode::Host => self.inet_hosts.last().map(|h| h.status()),
+            Mode::Guest => self.inet_guest.as_ref().map(|g| g.status()),
+        }
+    }
+
     pub fn tick(&mut self) -> bool {
         let now = now_us();
+        // Hand the internet tunnel's local bridge to the session once it is up.
+        if let (Some(g), Some(ig)) = (&self.guest, &self.inet_guest) {
+            let up = matches!(
+                ig.status(),
+                crate::network::internet::NetStatus::Connected(_)
+            );
+            g.set_extra(if up { vec![ig.bridge()] } else { Vec::new() });
+        }
         self.poll_network();
         self.poll_obs();
         self.poll_workers();
@@ -508,6 +530,10 @@ impl App {
                     .into_iter()
                     .map(|ip| format!("{ip}:{}", h.local_addr.port()))
                     .collect();
+                self.inet_hosts = vec![crate::network::internet::InternetHost::start(
+                    secret,
+                    h.local_addr.port(),
+                )];
                 self.host = Some(h);
                 self.join_problem = None;
                 self.public_network = crate::diagnostics::on_public_network();
@@ -525,6 +551,12 @@ impl App {
             let secret = crypto::random_bytes::<16>();
             let deadline = now_us() + self.cfg.join_code_minutes as i64 * 60_000_000;
             h.rotate(secret, deadline);
+            let port = h.local_addr.port();
+            self.inet_hosts
+                .push(crate::network::internet::InternetHost::start(secret, port));
+            if self.inet_hosts.len() > 2 {
+                self.inet_hosts.remove(0);
+            }
             self.secret = Some(secret);
             self.join_code = Some(crypto::encode_code(&secret));
             self.code_expires_us = deadline;
@@ -539,11 +571,10 @@ impl App {
         self.stop_session();
         self.join_problem = None;
         let (addr, code) = crate::network::parse_invite(&self.join_input);
-        let Some(addr) = addr else {
-            return self.info(false, "enter the host address (ip:port#CODE)");
-        };
+        // The address part is optional: the code alone joins over the internet.
+        let addr = addr.unwrap_or_default();
         let Some(code) = code else {
-            return self.info(false, "the invite is missing the join code after '#'");
+            return self.info(false, "paste the whole invite your host sent you");
         };
         let secret = match crypto::decode_code(&code) {
             Ok(s) => s,
@@ -556,7 +587,8 @@ impl App {
             Ok(g) => {
                 self.cfg.host_address = format!("{addr}#{code}");
                 self.guest = Some(g);
-                self.info(true, format!("connecting to {addr} ..."));
+                self.inet_guest = crate::network::internet::InternetGuest::start(secret).ok();
+                self.info(true, "joining your host...");
             }
             Err(e) => self.info(false, e),
         }
@@ -566,6 +598,8 @@ impl App {
         if self.host.take().is_some() || self.guest.take().is_some() {
             self.log.push("session closed");
         }
+        self.inet_hosts.clear();
+        self.inet_guest = None;
         self.peer = None;
         self.join_code = None;
         self.secret = None;

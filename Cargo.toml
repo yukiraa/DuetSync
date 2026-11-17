@@ -1,6 +1,6 @@
 [package]
 name = "duetsync"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 license = "MIT"
 description = "Sing together, anywhere. Remote duet sync helper for Discord + OBS."
@@ -48,6 +48,7 @@ windows = { version = "0.62", features = [
     "Win32_Security",
     "Win32_System_Console",
     "Win32_Networking_NetworkListManager",
+    "Win32_Networking_WinHttp",
     "Win32_UI_Controls_Dialogs",
 ] }
 windows-core = "0.62"
