@@ -19,3 +19,6 @@ logic in `src/lib.rs` modules, GUI in `src/ui`, controller in `src/app.rs`.
 - On Windows PowerShell 5.1, do not rewrite UTF-8 sources with `Get-Content`/`Set-Content`.
   Use the Edit tool or `[IO.File]` with UTF8.
 - `PROGRESS.md` = session recovery notes. Keep it current.
+
+## Agent routing (user preference)
+- Codex first: implementation, reviews, docs and mechanical edits go to `tools/run-codex.ps1` (`gpt-6.1-sol`; `gpt-5.6-luna` for trivial jobs). Claude only orchestrates and verifies, tersely. Claude subagents only when the Codex sandbox cannot do the job (network, GUI measurement).

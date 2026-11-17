@@ -34,6 +34,8 @@ fn http_only_serves_the_embedded_loopback_page() {
     assert!(root.starts_with("HTTP/1.1 200"), "{root}");
     assert!(root.contains("youtube.com/iframe_api"));
     assert!(root.contains("Cache-Control: no-store"));
+    assert!(root
+        .contains("playTimer=setTimeout(()=>{player.seekTo(m.from_s,true);player.playVideo();},"));
     assert!(http(port, &host, None, "/nope").starts_with("HTTP/1.1 404"));
     assert!(http(port, "example.test:80", None, "/").starts_with("HTTP/1.1 403"));
     assert!(http(port, &host, Some("https://example.test"), "/").starts_with("HTTP/1.1 403"));
@@ -105,7 +107,7 @@ fn websocket_clock_maps_play_deadline_to_page_time() {
         }
     }
     assert!(cue, "play_at farther than 1.5 seconds must cue first");
-    let expected = start as f64 / 1_000.0 + 12_345.0;
+    let expected = start as f64 / 1_000.0 + 12_345.0 - 120.0;
     assert!(
         (target.expect("play_at command") - expected).abs() < 2.0,
         "target={target:?}, expected={expected}"
@@ -114,17 +116,33 @@ fn websocket_clock_maps_play_deadline_to_page_time() {
 
 #[test]
 fn drift_policy_seeks_large_error_once_per_cooldown() {
-    assert!(should_correct(200.0, "playing", 3_000_000, 0));
-    assert!(!should_correct(20.0, "playing", 3_000_000, 0));
-    assert!(!should_correct(200.0, "playing", 3_000_000, 1));
+    assert!(should_correct(200.0, "playing", 4_000_000, 0));
+    assert!(!should_correct(20.0, "playing", 4_000_000, 0));
+    assert!(!should_correct(200.0, "playing", 4_000_000, 1));
 
     let bridge = VideoBridge::start(0).expect("start bridge");
     let mut socket = player(bridge.port());
     reply_to_ping(&mut socket, 0.0);
-    let start = now_us() - 1_000_000;
+    let start = now_us() - 3_000_000;
     bridge.play_at(start, 10.0);
     let reported_at = now_us();
-    socket.send(Message::Text(json!({"t":"state","state":"playing","pos_s":11.2,"page_ms":reported_at as f64 / 1_000.0}).to_string().into())).expect("state");
+    let report = |at: i64| json!({"t":"state","state":"playing","pos_s":10.2 + (at-start) as f64 / 1e6,"page_ms":at as f64 / 1_000.0});
+    socket
+        .send(Message::Text(report(reported_at).to_string().into()))
+        .expect("state");
+    let until = Instant::now() + Duration::from_millis(300);
+    while Instant::now() < until {
+        if let Ok(Message::Text(text)) = socket.read() {
+            assert_ne!(
+                serde_json::from_str::<Value>(&text).expect("command json")["t"],
+                "seek",
+                "one report must not trigger correction"
+            );
+        }
+    }
+    socket
+        .send(Message::Text(report(now_us()).to_string().into()))
+        .expect("second state");
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut seeks = 0;
     while Instant::now() < deadline {
@@ -140,6 +158,10 @@ fn drift_policy_seeks_large_error_once_per_cooldown() {
         }
     }
     assert_eq!(seeks, 1, "large drift should seek");
+    let info = bridge.clients();
+    assert_eq!(info[0].corrections, 1);
+    assert_eq!(info[0].seek_lead_ms, 120.0);
+    assert!((info[0].error_ms.expect("reported error") - 200.0).abs() < 1.0);
     let until = Instant::now() + Duration::from_millis(900);
     while Instant::now() < until {
         if let Ok(Message::Text(text)) = socket.read() {
