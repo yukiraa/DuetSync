@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.0 (2026-11-17), friendly guided UI
+
+### Changed
+- New look: cream background, sticker-style cards and pill buttons, Fredoka and Nunito fonts (OFL, bundled).
+- First launch asks "Who's singing today?" (host or guest).
+- The tabs are replaced by a step-by-step journey: host 6 steps, guest 5. Done steps get a star, and the current step is highlighted.
+- A mascot (coral host, mint guest) always says what to do next, with one main button per screen.
+- Rare options are under "+ Advanced settings".
+- "Go to step N" appears only when an unfinished earlier step blocks the current one.
+- Setup tests now mark their step done only when sound was actually heard.
+
+### Known
+- GUI private working set is 51.1 MB on the benchmark PC (was 43.6 MB): the bundled fonts enlarge the glyph atlas.
+
 ## 0.1.1 (2026-11-17), audit fixes
 
 Independent audit by OpenAI Codex (gpt-reserve); fixes by Codex (gpt-5.6-terra), Claude Sonnet and Claude Opus. See AGENT_LOG.md.

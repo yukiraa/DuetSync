@@ -20,12 +20,12 @@ This is a mid/high-end desktop. Low-end PCs were **not** measured.
 
 | Metric | Target | Measured | Method |
 | --- | --- | --- | --- |
-| Executable size | < 15 MB | **5.1 MB** (5,300,224 bytes, v0.1.1) | file size of `target\release\DuetSync.exe` |
-| GUI idle CPU, window visible | < 0.2 % | **0.021 %** of all cores (0.21 % of one core); v0.1.0: 0.024 % | `Process.TotalProcessorTime` delta over 45 s after 8 s warm-up, ÷ wall time ÷ 10 cores |
+| Executable size | < 15 MB | **5.7 MB** (5,731,840 bytes, v0.2.0) | file size of `target\release\DuetSync.exe` |
+| GUI idle CPU, window visible | < 0.2 % | **0.031 %** of all cores (0.31 % of one core), v0.2.0; v0.1.1: 0.021 % | `Process.TotalProcessorTime` delta over 45 s after 8 s warm-up, ÷ wall time ÷ 10 cores |
 | GUI idle CPU, minimized | < 0.2 % | **0.005 %** of all cores (v0.1.0: 0.003 %) | same, after `ShowWindow(SW_MINIMIZE)` |
 | Active playback CPU (two controllers + two output streams, headless) | < 1 % | **0.04–0.11 %** of all cores | `--selftest --e2e`, `GetProcessTimes` during ~10 s of playback; one process runs host **and** guest |
 | Output stream open, idle (headless) | — | below resolution (reported 0.000 % over 30 s) | `--selftest --bench 30` |
-| GUI private working set | < 40 MB | **43.6–48.8 MB** (target **missed**) | perf counter `Working Set - Private` |
+| GUI private working set | < 40 MB | **51.1 MB** v0.2.0 (43.6 MB v0.1.1; target **missed**) | perf counter `Working Set - Private` |
 | GUI working set / private bytes | — | 76–81 MB / 80–87 MB | `Process.WorkingSet64` / `PrivateMemorySize64` |
 | Headless core private bytes | — | 4.9 MB (one output stream), 7.6 MB (host+guest playing) | `K32GetProcessMemoryInfo` |
 

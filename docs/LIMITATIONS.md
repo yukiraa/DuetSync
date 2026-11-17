@@ -53,7 +53,7 @@
 - Windows only. Process loopback needs Windows 10 2004+.
 - No system tray icon. Minimizing reduces the app to ~1 Hz logic with no rendering, so it
   stays responsive to session commands.
-- GUI private working set measured at 43.6–49 MB on an NVIDIA OpenGL system, above the
+- GUI private working set measured at 51.1 MB (v0.2.0; 43.6 MB before the bundled fonts) on an NVIDIA OpenGL system, above the
   40 MB target. Most of it is the GPU driver. The wgpu renderer was tried and was worse
   (138 MB default, 310 MB DX12 low-power).
 - Unsigned executable: SmartScreen may warn.

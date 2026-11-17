@@ -4,6 +4,8 @@
 
 ![DuetSync main window](docs/screenshot.png)
 
+![Guided steps](docs/screenshot-steps.png)
+
 DuetSync is a small, free, open-source (MIT) Windows app for two performers who sing a
 karaoke duet over Discord and want the **recording or livestream** to sound in time.
 
