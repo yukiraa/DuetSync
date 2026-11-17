@@ -24,4 +24,5 @@ logic in `src/lib.rs` modules, GUI in `src/ui`, controller in `src/app.rs`.
 - YouTube tests (`--selftest --video-test <link>`): use videos shorter than 3 minutes only.
 
 ## Agent routing (user preference)
-- Codex first: implementation, reviews, docs and mechanical edits go to `tools/run-codex.ps1` (`gpt-6.1-sol`; `gpt-5.6-luna` for trivial jobs). Claude only orchestrates and verifies, tersely. Claude subagents only when the Codex sandbox cannot do the job (network, GUI measurement).
+- CURRENT: Opus only. Do the work inline; no Codex runs and no Claude subagents unless the
+  user asks again. (Earlier rule "Codex first" is superseded; history is in AGENT_LOG.md.)

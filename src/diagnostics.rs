@@ -66,6 +66,74 @@ mod imp {
     }
 }
 
+/// True when a connected network is categorised "Public" by Windows. Windows Firewall
+/// is strictest there and commonly blocks a host's incoming connections. `None` = unknown.
+#[cfg(windows)]
+pub fn on_public_network() -> Option<bool> {
+    use windows::Win32::Networking::NetworkListManager::{
+        INetwork, INetworkListManager, NetworkListManager, NLM_ENUM_NETWORK_CONNECTED,
+        NLM_NETWORK_CATEGORY_PUBLIC,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED,
+    };
+    // Own thread so the caller's COM apartment does not matter.
+    std::thread::spawn(|| unsafe {
+        let init = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
+        let result = (|| -> windows::core::Result<bool> {
+            let nlm: INetworkListManager = CoCreateInstance(&NetworkListManager, None, CLSCTX_ALL)?;
+            let list = nlm.GetNetworks(NLM_ENUM_NETWORK_CONNECTED)?;
+            let mut public = false;
+            loop {
+                let mut item: [Option<INetwork>; 1] = [None];
+                let mut fetched = 0u32;
+                list.Next(&mut item, Some(&mut fetched))?;
+                let Some(net) = item[0].take().filter(|_| fetched == 1) else {
+                    break;
+                };
+                if net.GetCategory()? == NLM_NETWORK_CATEGORY_PUBLIC {
+                    public = true;
+                }
+            }
+            Ok(public)
+        })();
+        if init {
+            CoUninitialize();
+        }
+        result.ok()
+    })
+    .join()
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(windows))]
+pub fn on_public_network() -> Option<bool> {
+    None
+}
+
+/// Plain-language reason for a failed join attempt (raw socket/handshake error in).
+pub fn explain_join_error(raw: &str) -> &'static str {
+    let e = raw.to_ascii_lowercase();
+    if e.contains("timed out") || e.contains("10060") {
+        "No answer from the host's PC. Usually you are on different networks, or the host's Windows Firewall is blocking DuetSync."
+    } else if e.contains("refused") || e.contains("10061") {
+        "The host's PC answered, but DuetSync is not waiting there. Ask your host to open DuetSync and press Create session."
+    } else if e.contains("unreachable") || e.contains("10051") || e.contains("10065") {
+        "That address can't be reached from here. Check you are on the same Wi-Fi, or both running Tailscale."
+    } else if e.contains("resolve") || e.contains("invalid") && e.contains("address") {
+        "That address doesn't look right. Copy the whole invite again."
+    } else if e.contains("too many pending")
+        || e.contains("closed")
+        || e.contains("reset")
+        || e.contains("10054")
+    {
+        "The host's DuetSync closed the connection. Make sure you both run the same DuetSync version, then try again."
+    } else {
+        "Couldn't connect yet. Still trying..."
+    }
+}
+
 pub struct Sampler {
     last_cpu: u64,
     last_wall: i64,

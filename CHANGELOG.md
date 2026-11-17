@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.1 (2026-11-17), joining fixes
+
+### Fixed
+- A joining guest no longer waits silently. The join screen shows the address being tried,
+  how long, how many tries failed, and the real reason in plain words (no answer / refused /
+  unreachable / closed), plus a checklist after 2 failed tries.
+- Retries happen every 2 s at most (was up to 5 s).
+- A fresh join is ready in about 1 s (was about 2 s): the first clock-sync pings are sent every 100 ms.
+- The host's anti-flood limit counted live connections as "pending", so stale links could
+  block new joins. It now counts only unfinished handshakes.
+- The host's Step 1 shows "Partner can't join?":
+  - why someone was refused (version, expired, wrong code);
+  - a warning when Windows marks the network "Public";
+  - a Tailscale hint when the invite only works on the same Wi-Fi.
+- Refused guests see the reason on the join screen.
+
 ## 0.3.0 (2026-11-17), YouTube songs and live auto-sync
 
 ### Added

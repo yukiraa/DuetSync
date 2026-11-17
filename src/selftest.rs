@@ -101,10 +101,17 @@ mod e2e {
         };
         let mut host = App::with_config(host_cfg, false);
         host.start_host();
-        let invite = format!(
-            "127.0.0.1:{port}#{}",
-            host.join_code.clone().unwrap_or_default()
-        );
+        // `--lan`: join through the real network address shown in the invite (not loopback).
+        let addr = if args.iter().any(|a| a == "--lan") {
+            host.invite_hosts
+                .first()
+                .cloned()
+                .unwrap_or_else(|| format!("127.0.0.1:{port}"))
+        } else {
+            format!("127.0.0.1:{port}")
+        };
+        println!("joining via {addr}");
+        let invite = format!("{addr}#{}", host.join_code.clone().unwrap_or_default());
         let guest_cfg = Config {
             mode: Mode::Guest,
             output_device: Some(cable_play.clone()),
@@ -120,9 +127,19 @@ mod e2e {
         let mut code = 0;
 
         // 1. Session + clock sync
+        let join_t0 = Instant::now();
+        let mut connected_at = None;
         let ok = pump(&mut host, &mut guest, 10.0, |h, g| {
+            if connected_at.is_none() && g.connected() {
+                connected_at = Some(join_t0.elapsed());
+            }
             h.connected() && g.clock_estimate().is_some() && h.remote.is_some()
         });
+        println!(
+            "join timing: connected after {:?}, ready (clock synced) after {:?}",
+            connected_at,
+            join_t0.elapsed()
+        );
         if !ok {
             println!(
                 "FAIL session/clock: host log: {:?}",

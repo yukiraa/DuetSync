@@ -237,6 +237,13 @@ pub fn bubble_sentence(app: &App, step: Step, done: bool) -> String {
         Step::GuestJoin => {
             if app.guest.is_none() {
                 "Paste the invite your host sent you, then press Join!"
+            } else if !app.connected()
+                && app
+                    .guest
+                    .as_ref()
+                    .is_some_and(|g| g.join_status().failed_attempts > 0)
+            {
+                "Can't reach your host yet. Check What's happening below."
             } else if !app.connected() {
                 "Connecting to your host..."
             } else if done {
@@ -381,6 +388,67 @@ fn host_connect(g: &mut Gui, ui: &mut Ui) {
             }
         });
     });
+    if !app.connected() {
+        host_join_help(app, ui);
+    }
+}
+
+/// Host-side "partner can't join?" checklist with what DuetSync actually observed.
+fn host_join_help(app: &App, ui: &mut Ui) {
+    let has_vpn = app.invite_hosts.iter().any(|h| h.starts_with("100."));
+    card(ui, Some("Partner can't join?"), |ui| {
+        if let Some((why, at)) = &app.join_problem {
+            let ago = (now_us() - at) / 1_000_000;
+            if ago < 600 {
+                check_row(
+                    ui,
+                    false,
+                    &format!(
+                        "Someone tried to join {ago} s ago and was refused: {}",
+                        plain_refusal(why)
+                    ),
+                );
+            }
+        }
+        check_row(
+            ui,
+            has_vpn,
+            if has_vpn {
+                "Tailscale found: if you live apart, send the invite that starts with 100."
+            } else {
+                "Not in the same house? The invite above only works on the same Wi-Fi/router. For far away, install Tailscale (free) on both PCs, log in to the same account network, then press New code."
+            },
+        );
+        match app.public_network {
+            Some(true) => check_row(
+                ui,
+                false,
+                "Windows calls your network \"Public\", which blocks incoming connections. Set it to Private (Settings, Network, your connection, Private), or allow DuetSync in Windows Firewall for Public networks.",
+            ),
+            Some(false) => check_row(ui, true, "Network is Private: Windows lets your partner in."),
+            None => {}
+        }
+        check_row(
+            ui,
+            true,
+            "Both of you must run the same DuetSync version, and paste the whole invite (address#code).",
+        );
+    });
+}
+
+fn plain_refusal(raw: &str) -> &'static str {
+    let e = raw.to_ascii_lowercase();
+    if e.contains("version") {
+        "different DuetSync version. Both need the same one."
+    } else if e.contains("expired") {
+        "the invite expired. Press New code and send it again."
+    } else if e.contains("invalid join code") {
+        "wrong code. Copy the whole invite again."
+    } else if e.contains("too many") {
+        "too many tries at once. Wait a moment."
+    } else {
+        "connection dropped during the handshake."
+    }
 }
 
 fn advanced_connect(g: &mut Gui, ui: &mut Ui) {
@@ -1588,6 +1656,15 @@ fn advanced_sing(g: &mut Gui, ui: &mut Ui) {
 fn guest_join(g: &mut Gui, ui: &mut Ui) {
     let app = &mut g.app;
     if app.guest.is_none() {
+        if let Some((why, _)) = &app.join_problem {
+            card(ui, Some("Could not join"), |ui| {
+                check_row(
+                    ui,
+                    false,
+                    &format!("Your host refused the connection: {}", plain_refusal(why)),
+                );
+            });
+        }
         card(ui, None, |ui| {
             ui.label(RichText::new("Invite from your host").font(fredoka(17.0)));
             ui.horizontal(|ui| {
@@ -1624,15 +1701,34 @@ fn guest_join(g: &mut Gui, ui: &mut Ui) {
                     None => ui.label(soft(if app.connected() {
                         "Syncing clocks..."
                     } else {
-                        "If it takes long, ask your host for a new invite."
+                        "Knocking on your host's door..."
                     })),
                 };
             });
         });
-        if fun_button(ui, "Leave", Kind::Ghost).clicked() {
+        if fun_button(ui, "Cancel", Kind::Ghost).clicked() {
             app.stop_session();
         }
     });
+    // Live connection report: what is actually happening, in plain words.
+    if !app.connected() {
+        if let Some(st) = app.guest.as_ref().map(|g| g.join_status()) {
+            card(ui, Some("What's happening"), |ui| {
+                ui.label(soft(format!(
+                    "Trying {} for {:.0} s ({} failed tries, retrying every 2 s).",
+                    st.host, st.seconds, st.failed_attempts
+                )));
+                if let Some(err) = &st.last_error {
+                    check_row(ui, false, crate::diagnostics::explain_join_error(err));
+                }
+                if st.failed_attempts >= 2 {
+                    check_row(ui, false, "Far apart? An invite starting with 192.168. or 10. only works on the same Wi-Fi. Use Tailscale on both PCs and ask for an invite that starts with 100.");
+                    check_row(ui, false, "Host's PC: Windows network set to Private, or DuetSync allowed in Windows Firewall.");
+                    check_row(ui, false, "Your host has DuetSync open with a session created, and you both run the same version.");
+                }
+            });
+        }
+    }
 }
 
 fn guest_audio(g: &mut Gui, ui: &mut Ui) {

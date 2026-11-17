@@ -221,6 +221,10 @@ pub struct App {
     pub routing_ok: bool,
     /// Steps (1-based) the user confirmed with "Next".
     pub confirmed_steps: std::collections::BTreeSet<u8>,
+    /// Last refused join (host: someone's failed attempt; guest: why we were refused).
+    pub join_problem: Option<(String, i64)>,
+    /// Host: Windows says a connected network is "Public" (firewall blocks more).
+    pub public_network: Option<bool>,
 
     // live auto-sync
     live: Option<LiveRun>,
@@ -330,6 +334,8 @@ impl App {
             guest_source_ok: false,
             routing_ok: false,
             confirmed_steps: Default::default(),
+            join_problem: None,
+            public_network: None,
             live: None,
             live_starting: None,
             live_retry_us: 0,
@@ -503,6 +509,8 @@ impl App {
                     .map(|ip| format!("{ip}:{}", h.local_addr.port()))
                     .collect();
                 self.host = Some(h);
+                self.join_problem = None;
+                self.public_network = crate::diagnostics::on_public_network();
                 self.info(
                     true,
                     format!("session open on port {}", self.cfg.listen_port),
@@ -529,6 +537,7 @@ impl App {
 
     pub fn join(&mut self) {
         self.stop_session();
+        self.join_problem = None;
         let (addr, code) = crate::network::parse_invite(&self.join_input);
         let Some(addr) = addr else {
             return self.info(false, "enter the host address (ip:port#CODE)");
@@ -620,6 +629,7 @@ impl App {
                     self.info(false, format!("disconnected: {r}"));
                 }
                 Event::AuthFailed(r) => {
+                    self.join_problem = Some((r.clone(), now_us()));
                     self.info(false, format!("join refused: {r}"));
                     if self.cfg.mode == Mode::Guest {
                         self.guest = None;

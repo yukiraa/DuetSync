@@ -192,7 +192,14 @@ fn writer_loop(
             Some(Out::Close) => unreachable!(),
             None if ping => {
                 seq = seq.wrapping_add(1);
-                next_ping = now_us() + HEARTBEAT.as_micros() as i64;
+                // Burst the first pings so a fresh join gets a clock estimate in ~0.5 s,
+                // then settle to the normal heartbeat.
+                let interval = if seq <= 8 {
+                    100_000
+                } else {
+                    HEARTBEAT.as_micros() as i64
+                };
+                next_ping = now_us() + interval;
                 Msg::Ping { seq, t1: now_us() }
             }
             None => continue,
@@ -397,7 +404,9 @@ impl Drop for Host {
 }
 
 fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
-    let _handshake_guard = HandshakeGuard {
+    // Counts only the unauthenticated phase; released right after the handshake so a
+    // long-lived (or stale, not yet timed-out) link never blocks new joins.
+    let handshake_guard = HandshakeGuard {
         pending_handshakes: &sh.pending_handshakes,
     };
     if sh.stop.load(Ordering::Acquire) {
@@ -494,6 +503,7 @@ fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
             return;
         }
     };
+    drop(handshake_guard);
     *sh.resume.lock().unwrap() = Some(resume);
     // A new authenticated connection replaces any stale one (guest reconnect).
     if let Some(old) = sh.out.lock().unwrap().take() {
@@ -547,11 +557,26 @@ struct GuestShared {
     stop: AtomicBool,
     stats: Arc<LinkStats>,
     clock: Arc<Mutex<ClockSync>>,
+    attempts: AtomicU64,
+    last_error: Mutex<Option<String>>,
+    started_us: i64,
+}
+
+/// What the guest's connection loop is doing, for the join screen.
+#[derive(Clone, Debug, Default)]
+pub struct JoinStatus {
+    pub host: String,
+    /// Failed connection attempts since the last success.
+    pub failed_attempts: u64,
+    /// Raw error of the last failed attempt (None after a success).
+    pub last_error: Option<String>,
+    pub seconds: f64,
 }
 
 pub struct Guest {
     shared: Arc<GuestShared>,
     pub events: Receiver<Event>,
+    host: String,
     thread: Option<thread::JoinHandle<()>>,
 }
 
@@ -564,6 +589,9 @@ impl Guest {
             stop: AtomicBool::new(false),
             stats: Arc::new(LinkStats::default()),
             clock: Arc::new(Mutex::new(ClockSync::default())),
+            attempts: AtomicU64::new(0),
+            last_error: Mutex::new(None),
+            started_us: now_us(),
         });
         let sh = shared.clone();
         let thread = thread::Builder::new()
@@ -573,6 +601,7 @@ impl Guest {
         Ok(Self {
             shared,
             events: erx,
+            host: addr.to_string(),
             thread: Some(thread),
         })
     }
@@ -593,6 +622,15 @@ impl Guest {
 
     pub fn clock(&self) -> Option<Estimate> {
         self.shared.clock.lock().ok()?.estimate()
+    }
+
+    pub fn join_status(&self) -> JoinStatus {
+        JoinStatus {
+            host: self.host.clone(),
+            failed_attempts: self.shared.attempts.load(Ordering::Relaxed),
+            last_error: self.shared.last_error.lock().ok().and_then(|g| g.clone()),
+            seconds: (now_us() - self.shared.started_us) as f64 / 1e6,
+        }
     }
 }
 
@@ -706,6 +744,10 @@ fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: 
             Ok((s, tx_seal, rx_seal, resume)) => {
                 credential = Credential::Resume(resume);
                 backoff = Duration::from_millis(500);
+                sh.attempts.store(0, Ordering::Relaxed);
+                if let Ok(mut g) = sh.last_error.lock() {
+                    *g = None;
+                }
                 if let Ok(mut c) = sh.clock.lock() {
                     c.clear(); // a new path may have different delay
                 }
@@ -747,6 +789,10 @@ fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: 
                     continue;
                 }
                 let fatal = e.contains("join code") || e.contains("version mismatch");
+                sh.attempts.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut g) = sh.last_error.lock() {
+                    *g = Some(e.clone());
+                }
                 let _ = events.try_send(if fatal {
                     Event::AuthFailed(e)
                 } else {
@@ -762,6 +808,7 @@ fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: 
         while now_us() < until && !sh.stop.load(Ordering::Acquire) {
             thread::sleep(Duration::from_millis(100));
         }
-        backoff = (backoff * 2).min(Duration::from_secs(5));
+        // Retry quickly: a joining user is waiting on screen.
+        backoff = (backoff * 2).min(Duration::from_secs(2));
     }
 }
