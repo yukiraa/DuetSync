@@ -221,6 +221,8 @@ pub struct CaptureHandle {
     pub description: String,
     samples: Consumer<f32>,
     anchors: Consumer<Anchor>,
+    last_samples_dropped: u64,
+    last_anchors_dropped: u64,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -255,6 +257,8 @@ impl CaptureHandle {
             description,
             samples: sc,
             anchors: ac,
+            last_samples_dropped: 0,
+            last_anchors_dropped: 0,
             thread: Some(thread),
         })
     }
@@ -266,6 +270,50 @@ impl CaptureHandle {
 
     pub fn error(&self) -> Option<String> {
         self.shared.error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// Enable or disable non-blocking streaming into the capture rings.
+    ///
+    /// Draining is deliberately done by a caller-owned worker, never by the
+    /// event-driven audio thread.
+    pub fn set_streaming(&self, on: bool) {
+        self.shared.recording.store(on, Ordering::Release);
+    }
+
+    /// Empty the capture rings without waiting.  The vectors are reused by the
+    /// caller.  A capture failure or a ring overflow invalidates this batch.
+    pub fn drain(&mut self, samples: &mut Vec<f32>, anchors: &mut Vec<Anchor>) -> Res<()> {
+        samples.clear();
+        anchors.clear();
+        let mut sample_buf = [0.0f32; 8192];
+        let mut anchor_buf = [Anchor::default(); 64];
+        loop {
+            let n = self.samples.pop_slice(&mut sample_buf);
+            samples.extend_from_slice(&sample_buf[..n]);
+            if n < sample_buf.len() {
+                break;
+            }
+        }
+        loop {
+            let n = self.anchors.pop_slice(&mut anchor_buf);
+            anchors.extend_from_slice(&anchor_buf[..n]);
+            if n < anchor_buf.len() {
+                break;
+            }
+        }
+        let sample_dropped = self.samples.dropped();
+        let anchor_dropped = self.anchors.dropped();
+        let overflow = sample_dropped != self.last_samples_dropped
+            || anchor_dropped != self.last_anchors_dropped;
+        self.last_samples_dropped = sample_dropped;
+        self.last_anchors_dropped = anchor_dropped;
+        if let Some(err) = self.error() {
+            return Err(err);
+        }
+        if overflow {
+            return Err("capture overflow — streaming batch discarded".into());
+        }
+        Ok(())
     }
 
     /// Record from now until local time `end_us`. Blocking; call from a worker thread.
