@@ -173,6 +173,25 @@ mod tests {
     }
 
     #[test]
+    fn recording_before_a_failed_write_keeps_original_baseline() {
+        let s = src(&[("mic", 0.0), ("guest", 150.0)]);
+        let mut ledger = OffsetLedger::default();
+        let obs = cur(&[("mic", 30), ("guest", 5)]);
+        let (changes, _) = plan(&s, 10.0, &obs, &ledger).unwrap();
+        // Ledger is recorded before the write; the write then fails, so OBS is unchanged.
+        changes.iter().for_each(|c| ledger.record(c));
+        assert_eq!(ledger.baseline["mic"], 30);
+        let (again, notes) = plan(&s, 10.0, &obs, &ledger).unwrap();
+        for (a, c) in again.iter().zip(&changes) {
+            assert_eq!(a.baseline_ms, c.baseline_ms, "baseline stays the original");
+            assert_eq!(a.target_ms, c.target_ms, "no stacked compensation");
+        }
+        assert_eq!(again[0].baseline_ms, 30);
+        assert_eq!(again[1].baseline_ms, 5);
+        assert_eq!(notes.len(), 2, "flagged as changed, not stacked: {notes:?}");
+    }
+
+    #[test]
     fn range_and_duplicates() {
         let s = src(&[("mic", 0.0), ("guest", 25_000.0)]);
         assert!(plan(

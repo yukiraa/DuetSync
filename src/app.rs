@@ -132,7 +132,6 @@ pub struct App {
     pub obs_password: String,
     pub obs_busy: bool,
     pub pending_apply: Option<PendingApply>,
-    applying: Option<Vec<OffsetChange>>,
     pub last_apply: Vec<ApplyResult>,
     pub video_state: BTreeMap<String, Option<i64>>,
     pub confirm_restore: bool,
@@ -207,7 +206,6 @@ impl App {
             obs_inputs: vec![],
             obs_busy: false,
             pending_apply: None,
-            applying: None,
             last_apply: vec![],
             video_state: BTreeMap::new(),
             confirm_restore: false,
@@ -1338,12 +1336,10 @@ impl App {
                 ObsEvent::Disconnected(r) => {
                     self.obs_busy = false;
                     self.obs_connected = false;
-                    self.applying = None;
                     self.info(false, format!("OBS: {r}"));
                 }
                 ObsEvent::Error(r) => {
                     self.obs_busy = false;
-                    self.applying = None;
                     self.info(false, format!("OBS: {r}"));
                 }
                 ObsEvent::Inputs(i) => {
@@ -1356,12 +1352,6 @@ impl App {
                     if restore {
                         for r in results.iter().filter(|r| r.verified()) {
                             self.cfg.ledger.forget(&r.input);
-                        }
-                    } else if let Some(ch) = self.applying.take() {
-                        for c in &ch {
-                            if results.iter().any(|r| r.input == c.input && r.verified()) {
-                                self.cfg.ledger.record(c);
-                            }
                         }
                     }
                     self.save();
@@ -1438,6 +1428,14 @@ impl App {
         let Some(p) = self.pending_apply.take() else {
             return;
         };
+        // Record baselines BEFORE writing: if a write fails or the connection dies midway, the
+        // ledger still knows the original values so Restore works and plan() cannot treat a
+        // compensated value as the baseline. An unwritten input still equals its baseline, so
+        // plan() reuses it as the baseline again.
+        for c in &p.changes {
+            self.cfg.ledger.record(c);
+        }
+        self.save();
         self.obs_busy = true;
         self.obs.send(ObsCmd::SetOffsets {
             restore: false,
@@ -1447,7 +1445,6 @@ impl App {
                 .map(|c| (c.input.clone(), c.target_ms))
                 .collect(),
         });
-        self.applying = Some(p.changes);
     }
 
     pub fn restore_offsets(&mut self) {

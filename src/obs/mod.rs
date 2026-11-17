@@ -136,14 +136,24 @@ fn worker(rx: Receiver<ObsCmd>, ev: SyncSender<ObsEvent>) {
                 ObsCmd::SetOffsets { restore, targets } => {
                     let c = client.as_mut().ok_or("OBS not connected")?;
                     let mut results = Vec::new();
+                    let mut conn_err: Option<String> = None;
                     for (input, ms) in targets {
-                        let w = c.set_sync_offset(&input, ms);
-                        if let Err(e) = &w {
-                            if is_conn_err(e) {
-                                return Err(e.clone());
+                        // After a connection failure, report every remaining input as failed
+                        // instead of aborting silently.
+                        let readback = match &conn_err {
+                            Some(e) => Err(e.clone()),
+                            None => {
+                                let r = c
+                                    .set_sync_offset(&input, ms)
+                                    .and_then(|_| c.sync_offset(&input));
+                                if let Err(e) = &r {
+                                    if is_conn_err(e) {
+                                        conn_err = Some(e.clone());
+                                    }
+                                }
+                                r
                             }
-                        }
-                        let readback = w.and_then(|_| c.sync_offset(&input));
+                        };
                         results.push(ApplyResult {
                             input,
                             requested: ms,
@@ -151,6 +161,10 @@ fn worker(rx: Receiver<ObsCmd>, ev: SyncSender<ObsEvent>) {
                         });
                     }
                     let _ = ev.send(ObsEvent::Offsets { restore, results });
+                    if let Some(e) = conn_err {
+                        // The outer handler sends Disconnected and drops the client.
+                        return Err(e);
+                    }
                     let inputs = refresh(c)?;
                     let _ = ev.send(ObsEvent::Inputs(inputs));
                 }

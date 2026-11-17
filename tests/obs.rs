@@ -16,6 +16,10 @@ struct MockState {
     kinds: BTreeMap<String, String>,
     filters: BTreeMap<(String, String), Value>,
     log: Vec<(String, Value)>,
+    /// Fault injection: close the connection right after the read-back that follows the
+    /// first successful `SetInputAudioSyncOffset`.
+    drop_after_first_set: bool,
+    set_seen: bool,
 }
 
 const SALT: &str = "c2FsdA==";
@@ -102,6 +106,7 @@ fn mock_obs(password: &'static str) -> (u16, Arc<Mutex<MockState>>) {
                                 (false, 402, json!({}))
                             } else {
                                 s.offsets.insert(name, o);
+                                s.set_seen = true;
                                 (true, 100, json!({}))
                             }
                         }
@@ -128,6 +133,8 @@ fn mock_obs(password: &'static str) -> (u16, Arc<Mutex<MockState>>) {
                         }
                         _ => (false, 204, json!({})),
                     };
+                    let close_now =
+                        s.drop_after_first_set && s.set_seen && rt == "GetInputAudioSyncOffset";
                     drop(s);
                     send(
                         &mut ws,
@@ -135,6 +142,9 @@ fn mock_obs(password: &'static str) -> (u16, Arc<Mutex<MockState>>) {
                             "requestStatus":{"result":ok,"code":code,"comment": if ok {Value::Null} else {json!("mock error")}},
                             "responseData":data}}),
                     );
+                    if close_now {
+                        return;
+                    }
                 }
             });
         }
@@ -295,6 +305,60 @@ fn apply_recalibrate_restore_via_worker() {
     assert_eq!(s.offsets["Mic/Aux"], 0);
     assert_eq!(s.offsets["Instrumental"], 25);
     assert_eq!(s.offsets["Discord"], 0);
+}
+
+#[test]
+fn connection_drop_mid_apply_reports_every_input() {
+    let (port, state) = mock_obs("pw");
+    state.lock().unwrap().drop_after_first_set = true;
+    let w = ObsWorker::start();
+    w.send(ObsCmd::Connect {
+        host: "127.0.0.1".into(),
+        port,
+        password: Some("pw".into()),
+    });
+    let _ = next_inputs(&w);
+    w.send(ObsCmd::SetOffsets {
+        restore: false,
+        targets: vec![
+            ("Discord".into(), 20),
+            ("Instrumental".into(), 200),
+            ("Mic/Aux".into(), 180),
+        ],
+    });
+    let mut results = None;
+    let mut disconnected = false;
+    while !disconnected {
+        match w
+            .events
+            .recv_timeout(Duration::from_secs(5))
+            .expect("obs event")
+        {
+            ObsEvent::Offsets {
+                restore,
+                results: r,
+            } => {
+                assert!(!restore);
+                assert!(results.is_none(), "Offsets sent once");
+                results = Some(r);
+            }
+            ObsEvent::Disconnected(_) => disconnected = true,
+            ObsEvent::Error(e) => panic!("expected Disconnected, got Error({e})"),
+            ObsEvent::Inputs(_) => panic!("no refresh after a dropped connection"),
+            _ => {}
+        }
+    }
+    let r = results.expect("Offsets must be reported before Disconnected");
+    assert_eq!(r.len(), 3);
+    assert!(r[0].verified(), "{:?}", r[0]);
+    assert_eq!(r[0].input, "Discord");
+    for x in &r[1..] {
+        assert!(x.readback.is_err() && !x.verified(), "{x:?}");
+    }
+    let s = state.lock().unwrap();
+    assert_eq!(s.offsets["Discord"], 20);
+    assert_eq!(s.offsets["Instrumental"], 25, "never written");
+    assert_eq!(s.offsets["Mic/Aux"], 0, "never written");
 }
 
 #[test]
