@@ -44,7 +44,10 @@ pub struct CalibOutcome {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PlayInfo {
+    /// Protocol generation (host's Play/Pause messages).
     pub gen: u32,
+    /// Local ring/feeder generation (changes on every local re-seek).
+    pub local_gen: u32,
     pub start_host_us: i64,
     pub from: u64,
 }
@@ -109,6 +112,7 @@ pub struct App {
     pub guest_track_name: Option<String>,
     pub play: Option<PlayInfo>,
     gen: u32,
+    local_gen: u32,
     pub paused_at: u64,
     pub remote: Option<RemoteStatus>,
 
@@ -188,6 +192,7 @@ impl App {
             guest_track_name: None,
             play: None,
             gen: 0,
+            local_gen: 0,
             paused_at: 0,
             remote: None,
             calib: None,
@@ -307,11 +312,12 @@ impl App {
     }
 
     fn every_second(&mut self, now: i64) {
+        self.handle_reseek();
         if self.cfg.mode == Mode::Guest {
             if let (Some(g), Some(est)) = (&self.guest, self.clock_estimate()) {
                 if let (Some(p), Some(r)) = (self.play, &self.render) {
                     let _ = r.cmd(Command::Retime {
-                        gen: p.gen,
+                        gen: p.local_gen,
                         start_us: est.to_local(p.start_host_us),
                     });
                 }
@@ -687,11 +693,12 @@ impl App {
         }
         self.gen = self.gen.wrapping_add(1);
         let start = now_us() + (countdown_s * 1e6) as i64;
-        self.start_local(self.gen, start, from);
+        let (local_gen, s2, f2) = self.start_local(start, from);
         self.play = Some(PlayInfo {
             gen: self.gen,
-            start_host_us: start,
-            from,
+            local_gen,
+            start_host_us: s2,
+            from: f2,
         });
         self.send(Msg::Play {
             gen: self.gen,
@@ -711,7 +718,21 @@ impl App {
         Ok(())
     }
 
-    fn start_local(&mut self, gen: u32, start_local_us: i64, from: u64) {
+    /// Start the local player so track frame `from` is audible at `start_local_us`.
+    /// A start less than 300 ms away is re-anchored 500 ms ahead (same musical timeline).
+    /// Returns (local ring generation, effective start, effective from).
+    fn start_local(&mut self, start_local_us: i64, from: u64) -> (u32, i64, u64) {
+        self.local_gen = self.local_gen.wrapping_add(1);
+        let gen = self.local_gen;
+        let now = now_us();
+        let (start_local_us, from) = if start_local_us.saturating_sub(now) < 300_000 {
+            let reanchored_start_us = now.saturating_add(500_000);
+            let elapsed_us = reanchored_start_us.saturating_sub(start_local_us).max(0);
+            let advance = (elapsed_us as u64).saturating_mul(self.track_rate() as u64) / 1_000_000;
+            (reanchored_start_us, from.saturating_add(advance))
+        } else {
+            (start_local_us, from)
+        };
         if let (Some(f), Some(r)) = (&self.feeder, &self.render) {
             f.seek(gen, from);
             let _ = r.cmd(Command::Play {
@@ -720,6 +741,33 @@ impl App {
                 from,
             });
         }
+        (gen, start_local_us, from)
+    }
+
+    /// The player could not skip far enough within its buffer: restart on the same
+    /// timeline from the frame that should be playing now.
+    fn handle_reseek(&mut self) {
+        let Some(r) = &self.render else { return };
+        if r.shared.reseek.swap(u64::MAX, Ordering::AcqRel) == u64::MAX {
+            return;
+        }
+        let Some(p) = self.play else { return };
+        let start_local = match self.cfg.mode {
+            Mode::Host => p.start_host_us,
+            Mode::Guest => match self.clock_estimate() {
+                Some(e) => e.to_local(p.start_host_us),
+                None => return,
+            },
+        };
+        let (local_gen, s2, f2) = self.start_local(start_local, p.from);
+        self.play = Some(PlayInfo {
+            local_gen,
+            start_host_us: p.start_host_us + (s2 - start_local),
+            from: f2,
+            ..p
+        });
+        self.log
+            .push("player re-seeked to stay on the shared timeline");
     }
 
     fn guest_play(&mut self, gen: u32, start_host_us: i64, from: u64) {
@@ -741,12 +789,16 @@ impl App {
         if let Err(e) = self.attach_if_needed() {
             return self.info(false, e);
         }
+        let start_local = est.to_local(start_host_us);
+        let (local_gen, s2, f2) = self.start_local(start_local, from);
+        // Keep the host-clock anchor consistent with the (possibly re-anchored) start, so
+        // later Retime commands describe the same timeline.
         self.play = Some(PlayInfo {
             gen,
-            start_host_us,
-            from,
+            local_gen,
+            start_host_us: start_host_us + (s2 - start_local),
+            from: f2,
         });
-        self.start_local(gen, est.to_local(start_host_us), from);
     }
 
     pub fn pause(&mut self) {

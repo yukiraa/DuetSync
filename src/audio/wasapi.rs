@@ -540,6 +540,8 @@ pub struct RenderShared {
     pub resyncs: AtomicU64,
     peak_bits: AtomicU32,
     pub stream_latency_us: AtomicI64,
+    /// Track frame the player needs re-seeking to (u64::MAX = none).
+    pub reseek: AtomicU64,
     stop: AtomicBool,
     pub alive: AtomicBool,
     pub error: Mutex<Option<String>>,
@@ -597,6 +599,7 @@ impl RenderHandle {
     pub fn start(device: Option<String>, rate: u32) -> Res<Self> {
         let shared = Arc::new(RenderShared::default());
         shared.alive.store(true, Ordering::Release);
+        shared.reseek.store(u64::MAX, Ordering::Release);
         let (tx, rx) = sync_channel::<RenderMsg>(64);
         let (ttx, trx) = sync_channel::<Trash>(64);
         let (rtx, rrx) = sync_channel::<Res<String>>(1);
@@ -751,6 +754,9 @@ fn render_thread(
             .store((core.drift_ms() * 1000.0) as i64, Ordering::Relaxed);
         sh.underruns.store(core.underruns, Ordering::Relaxed);
         sh.resyncs.store(core.hard_resyncs, Ordering::Relaxed);
+        if let Some(f) = core.needs_reseek {
+            sh.reseek.store(f, Ordering::Release);
+        }
         sh.peak_bits
             .fetch_max(core.peak.to_bits(), Ordering::Relaxed);
     }

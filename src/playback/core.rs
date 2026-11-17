@@ -82,6 +82,7 @@ pub struct PlayerCore {
     cur: Frame,
     next: Frame,
     frac: f64,
+    pop_budget: usize,
     drift_ema: f64,
     pub drift_correction: bool,
     pub output_latency_us: i64,
@@ -89,6 +90,8 @@ pub struct PlayerCore {
     clips: [Option<Clip>; MAX_CLIPS],
     pub underruns: u64,
     pub hard_resyncs: u64,
+    /// The feeder must seek to this track frame before playback can resume.
+    pub needs_reseek: Option<u64>,
     pub peak: f32,
 }
 
@@ -104,6 +107,7 @@ impl PlayerCore {
             cur: Frame::default(),
             next: Frame::default(),
             frac: 0.0,
+            pop_budget: 0,
             drift_ema: 0.0,
             drift_correction: true,
             output_latency_us: 0,
@@ -111,6 +115,7 @@ impl PlayerCore {
             clips: Default::default(),
             underruns: 0,
             hard_resyncs: 0,
+            needs_reseek: None,
             peak: 0.0,
         }
     }
@@ -139,6 +144,7 @@ impl PlayerCore {
                 self.pos = from as f64;
                 self.frac = 0.0;
                 self.drift_ema = 0.0;
+                self.needs_reseek = None;
                 self.state = State::Scheduled;
             }
             Command::Retime { gen, start_us } => {
@@ -180,8 +186,8 @@ impl PlayerCore {
     }
 
     fn pop_gen<S: FrameSource>(&mut self, src: &mut S) -> Option<Frame> {
-        // Discard stale frames from a previous seek generation.
-        for _ in 0..1_000_000 {
+        while self.pop_budget > 0 {
+            self.pop_budget -= 1;
             match src.pop() {
                 Some(f) if f.gen == self.gen => return Some(f),
                 Some(_) => continue,
@@ -189,6 +195,20 @@ impl PlayerCore {
             }
         }
         None
+    }
+
+    /// Drop at most one second of queued audio. The caller re-seeks if this cannot
+    /// reach the requested frame, rather than claiming a position the source did not
+    /// provide.
+    fn skip_frames<S: FrameSource>(&mut self, src: &mut S, requested: u64) -> u64 {
+        let mut consumed = 0;
+        for _ in 0..requested.min(self.rate as u64) {
+            if self.pop_gen(src).is_none() {
+                break;
+            }
+            consumed += 1;
+        }
+        consumed
     }
 
     /// Fill interleaved stereo `out` whose first frame is stream frame `n0`, presented at
@@ -203,6 +223,11 @@ impl PlayerCore {
     ) {
         let frames = out.len() / 2;
         out.fill(0.0);
+        self.pop_budget = self.rate as usize;
+        if self.needs_reseek.is_some() {
+            self.peak = 0.0;
+            return;
+        }
         let a0 = self.audible(n0, n0, t0_us);
         let mut i = 0usize;
 
@@ -216,12 +241,13 @@ impl PlayerCore {
                 } else {
                     // Late (joined mid-song or slow start): skip ahead to stay aligned.
                     let skip = (-wait) as u64;
-                    for _ in 0..skip {
-                        if self.pop_gen(src).is_none() {
-                            break;
-                        }
+                    let consumed = self.skip_frames(src, skip);
+                    self.pos = self.from.saturating_add(consumed) as f64;
+                    if consumed != skip {
+                        self.needs_reseek = Some(self.from.saturating_add(skip));
+                        self.peak = 0.0;
+                        return;
                     }
-                    self.pos = self.from as f64 + skip as f64;
                 }
                 self.prime(src);
                 self.state = State::Playing;
@@ -244,12 +270,14 @@ impl PlayerCore {
                     self.drift_ema = drift - hold as f64;
                 } else {
                     let skip = (-drift) as u64;
-                    for _ in 0..skip {
-                        if self.pop_gen(src).is_none() {
-                            break;
-                        }
+                    let target = (self.pos.max(0.0) as u64).saturating_add(skip);
+                    let consumed = self.skip_frames(src, skip);
+                    self.pos += consumed as f64;
+                    if consumed != skip {
+                        self.needs_reseek = Some(target);
+                        self.peak = 0.0;
+                        return;
                     }
-                    self.pos += skip as f64;
                     self.prime(src);
                     self.drift_ema = 0.0;
                 }
@@ -291,9 +319,10 @@ impl PlayerCore {
         }
         if self.state != State::Playing {
             // Purge frames of older generations so the feeder can refill for the next start.
-            for _ in 0..(self.rate as usize) {
+            while self.pop_budget > 0 {
                 match src.peek_gen() {
                     Some(g) if g != self.gen => {
+                        self.pop_budget -= 1;
                         src.pop();
                     }
                     _ => break,
@@ -459,7 +488,32 @@ mod tests {
         // First buffer presented 100 ms after the scheduled start.
         core.fill(&mut out, 0, 100_000.0, &mut src, &mut |_| {});
         assert_eq!(core.state, State::Playing);
+        assert_eq!(core.needs_reseek, None);
         assert!((out[0] - 4800.0).abs() <= 1.0, "{}", out[0]);
+    }
+
+    #[test]
+    fn large_late_start_requests_reseek_without_overreporting_position() {
+        let rate = 48_000u32;
+        let mut core = PlayerCore::new(rate);
+        let mut src = Ramp {
+            next: 0,
+            gen: 4,
+            len: 2 * rate as u64,
+        };
+        core.command(Command::Play {
+            gen: 4,
+            start_us: 0,
+            from: 0,
+        });
+        let mut out = vec![1.0f32; 960];
+
+        core.fill(&mut out, 0, 10_000_000.0, &mut src, &mut |_| {});
+
+        assert_eq!(core.needs_reseek, Some(10 * rate as u64));
+        assert_eq!(core.position_frames(), rate as f64);
+        assert!(core.position_frames() <= src.next as f64);
+        assert!(out.iter().all(|sample| *sample == 0.0));
     }
 
     #[test]

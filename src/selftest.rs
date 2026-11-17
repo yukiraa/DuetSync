@@ -213,6 +213,35 @@ mod e2e {
                 code = 1;
             }
         }
+        // Round 2: countdown shorter than the network/scheduling margin forces both players
+        // through the re-anchor path (start moved 500 ms ahead, same musical timeline).
+        host.host_play(5 * 44_100, 0.05);
+        let mut errs2 = Vec::new();
+        let t1 = Instant::now();
+        pump(&mut host, &mut guest, 7.0, |h, _| {
+            if t1.elapsed().as_secs_f64() > 2.0 {
+                if let Some((e, _)) = h.sync_error_ms() {
+                    errs2.push(e.abs());
+                }
+            }
+            false
+        });
+        host.stop();
+        pump(&mut host, &mut guest, 1.0, |_, _| false);
+        match errs2.iter().cloned().reduce(f64::max) {
+            Some(w) if w <= 20.0 => println!(
+                "OK re-anchored start: {} samples, worst {w:.2} ms",
+                errs2.len()
+            ),
+            Some(w) => {
+                println!("FAIL re-anchored start: worst {w:.2} ms");
+                code = 1;
+            }
+            None => {
+                println!("FAIL re-anchored start: no reports");
+                code = 1;
+            }
+        }
         let _ = std::fs::remove_file(wav);
         host.shutdown();
         guest.shutdown();

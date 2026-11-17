@@ -7,7 +7,7 @@ use super::protocol::{Handshake, Msg, MAX_FRAME, PROTO_VERSION};
 use crate::clock::now_us;
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -16,6 +16,7 @@ use std::time::Duration;
 pub const HEARTBEAT: Duration = Duration::from_millis(500);
 pub const PEER_TIMEOUT_US: i64 = 5_000_000;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_PENDING_HANDSHAKES: usize = 4;
 const DIR_C2S: u8 = 1;
 const DIR_S2C: u8 = 2;
 
@@ -271,12 +272,23 @@ pub struct HostConfig {
 struct HostShared {
     out: Mutex<Option<SyncSender<Out>>>,
     stop: AtomicBool,
-    joined_once: AtomicBool,
     deadline: std::sync::atomic::AtomicI64,
     secret: Mutex<[u8; 16]>,
+    resume: Mutex<Option<[u8; 32]>>,
+    pending_handshakes: AtomicUsize,
     stats: Arc<LinkStats>,
     conn_seq: AtomicU64,
     current: AtomicU64,
+}
+
+struct HandshakeGuard<'a> {
+    pending_handshakes: &'a AtomicUsize,
+}
+
+impl Drop for HandshakeGuard<'_> {
+    fn drop(&mut self) {
+        self.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 pub struct Host {
@@ -295,9 +307,10 @@ impl Host {
         let shared = Arc::new(HostShared {
             out: Mutex::new(None),
             stop: AtomicBool::new(false),
-            joined_once: AtomicBool::new(false),
             deadline: std::sync::atomic::AtomicI64::new(cfg.join_deadline_us),
             secret: Mutex::new(cfg.secret),
+            resume: Mutex::new(None),
+            pending_handshakes: AtomicUsize::new(0),
             stats: Arc::new(LinkStats::default()),
             conn_seq: AtomicU64::new(0),
             current: AtomicU64::new(0),
@@ -311,11 +324,27 @@ impl Host {
                         break;
                     }
                     let Ok(stream) = conn else { continue };
+                    if sh
+                        .pending_handshakes
+                        .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                            (n < MAX_PENDING_HANDSHAKES).then_some(n + 1)
+                        })
+                        .is_err()
+                    {
+                        let _ = stream.shutdown(Shutdown::Both);
+                        let _ =
+                            etx.try_send(Event::AuthFailed("too many pending connections".into()));
+                        continue;
+                    }
                     let sh2 = sh.clone();
                     let etx2 = etx.clone();
-                    let _ = thread::Builder::new()
+                    if thread::Builder::new()
                         .name("duetsync-host-conn".into())
-                        .spawn(move || host_conn(stream, sh2, etx2));
+                        .spawn(move || host_conn(stream, sh2, etx2))
+                        .is_err()
+                    {
+                        sh.pending_handshakes.fetch_sub(1, Ordering::AcqRel);
+                    }
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -345,7 +374,6 @@ impl Host {
     pub fn rotate(&self, secret: [u8; 16], deadline_us: i64) {
         *self.shared.secret.lock().unwrap() = secret;
         self.shared.deadline.store(deadline_us, Ordering::Release);
-        self.shared.joined_once.store(false, Ordering::Release);
     }
 }
 
@@ -369,6 +397,9 @@ impl Drop for Host {
 }
 
 fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
+    let _handshake_guard = HandshakeGuard {
+        pending_handshakes: &sh.pending_handshakes,
+    };
     if sh.stop.load(Ordering::Acquire) {
         return;
     }
@@ -378,8 +409,9 @@ fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
         .unwrap_or_else(|_| "?".into());
     let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
     let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
-    let secret = *sh.secret.lock().unwrap();
-    let res = (|| -> Result<(Sealer, Sealer), String> {
+    let join_secret = *sh.secret.lock().unwrap();
+    let resume_secret = *sh.resume.lock().unwrap();
+    let res = (|| -> Result<(Sealer, Sealer, [u8; 32]), String> {
         let Handshake::Hello { proto, app, nonce } = recv_hs(&mut s)? else {
             return Err("expected Hello".into());
         };
@@ -413,7 +445,13 @@ fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
             return Err("expected Auth".into());
         };
         let tag = crypto::unhex(&mac)?;
-        if !crypto::verify(&secret, b"DuetSync-auth-c", &[&cn, &sn], &tag) {
+        // Check both credentials before choosing one. The resume credential remains
+        // valid after the public join code expires or is rotated.
+        let join_matches = crypto::verify(&join_secret, b"DuetSync-auth-c", &[&cn, &sn], &tag);
+        let resume_matches = resume_secret
+            .as_ref()
+            .is_some_and(|resume| crypto::verify(resume, b"DuetSync-auth-c", &[&cn, &sn], &tag));
+        if !(join_matches || resume_matches) {
             thread::sleep(Duration::from_millis(500)); // slow down guessing
             let _ = send_hs(
                 &mut s,
@@ -423,7 +461,7 @@ fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
             );
             return Err("invalid join code".into());
         }
-        let joined = sh.joined_once.load(Ordering::Acquire);
+        let joined = resume_matches;
         if !joined && now_us() > sh.deadline.load(Ordering::Acquire) {
             let _ = send_hs(
                 &mut s,
@@ -433,24 +471,30 @@ fn host_conn(mut s: TcpStream, sh: Arc<HostShared>, events: SyncSender<Event>) {
             );
             return Err("expired join code used".into());
         }
-        let smac = crypto::mac(&secret, b"DuetSync-auth-s", &[&cn, &sn]);
+        let credential: &[u8] = if resume_matches {
+            resume_secret.as_ref().unwrap()
+        } else {
+            &join_secret
+        };
+        let smac = crypto::mac(credential, b"DuetSync-auth-s", &[&cn, &sn]);
         send_hs(
             &mut s,
             &Handshake::AuthOk {
                 mac: crypto::hex(&smac),
             },
         )?;
-        let (c2s, s2c) = crypto::session_keys(&secret, &cn, &sn);
-        Ok((Sealer::new(s2c, DIR_S2C), Sealer::new(c2s, DIR_C2S)))
+        let resume = crypto::mac(credential, b"DuetSync-resume", &[&cn, &sn]);
+        let (c2s, s2c) = crypto::session_keys(credential, &cn, &sn);
+        Ok((Sealer::new(s2c, DIR_S2C), Sealer::new(c2s, DIR_C2S), resume))
     })();
-    let (tx_seal, rx_seal) = match res {
+    let (tx_seal, rx_seal, resume) = match res {
         Ok(v) => v,
         Err(e) => {
             let _ = events.try_send(Event::AuthFailed(format!("{peer}: {e}")));
             return;
         }
     };
-    sh.joined_once.store(true, Ordering::Release);
+    *sh.resume.lock().unwrap() = Some(resume);
     // A new authenticated connection replaces any stale one (guest reconnect).
     if let Some(old) = sh.out.lock().unwrap().take() {
         let _ = old.try_send(Out::Close);
@@ -586,7 +630,10 @@ pub fn resolve(host: &str) -> Result<SocketAddr, String> {
         .ok_or_else(|| format!("no address for '{host}'"))
 }
 
-fn guest_handshake(s: &mut TcpStream, secret: &[u8; 16]) -> Result<(Sealer, Sealer), String> {
+fn guest_handshake(
+    s: &mut TcpStream,
+    credential: &[u8],
+) -> Result<(Sealer, Sealer, [u8; 32]), String> {
     let cn = crypto::random_bytes::<16>();
     send_hs(
         s,
@@ -601,7 +648,7 @@ fn guest_handshake(s: &mut TcpStream, secret: &[u8; 16]) -> Result<(Sealer, Seal
         Handshake::Reject { reason } => return Err(reason),
         _ => return Err("unexpected handshake".into()),
     };
-    let mac = crypto::mac(secret, b"DuetSync-auth-c", &[&cn, &sn]);
+    let mac = crypto::mac(credential, b"DuetSync-auth-c", &[&cn, &sn]);
     send_hs(
         s,
         &Handshake::Auth {
@@ -611,7 +658,7 @@ fn guest_handshake(s: &mut TcpStream, secret: &[u8; 16]) -> Result<(Sealer, Seal
     match recv_hs(s)? {
         Handshake::AuthOk { mac } => {
             if !crypto::verify(
-                secret,
+                credential,
                 b"DuetSync-auth-s",
                 &[&cn, &sn],
                 &crypto::unhex(&mac)?,
@@ -622,24 +669,42 @@ fn guest_handshake(s: &mut TcpStream, secret: &[u8; 16]) -> Result<(Sealer, Seal
         Handshake::Reject { reason } => return Err(reason),
         _ => return Err("unexpected handshake".into()),
     }
-    let (c2s, s2c) = crypto::session_keys(secret, &cn, &sn);
-    Ok((Sealer::new(c2s, DIR_C2S), Sealer::new(s2c, DIR_S2C)))
+    let resume = crypto::mac(credential, b"DuetSync-resume", &[&cn, &sn]);
+    let (c2s, s2c) = crypto::session_keys(credential, &cn, &sn);
+    Ok((Sealer::new(c2s, DIR_C2S), Sealer::new(s2c, DIR_S2C), resume))
+}
+
+enum Credential {
+    Join([u8; 16]),
+    Resume([u8; 32]),
+}
+
+impl Credential {
+    fn as_slice(&self) -> &[u8] {
+        match self {
+            Self::Join(secret) => secret,
+            Self::Resume(secret) => secret,
+        }
+    }
 }
 
 fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: SyncSender<Event>) {
     let mut backoff = Duration::from_millis(500);
     let mut first = true;
+    let join_secret = secret;
+    let mut credential = Credential::Join(secret);
     while !sh.stop.load(Ordering::Acquire) {
         let attempt = (|| -> Result<_, String> {
             let mut s = TcpStream::connect_timeout(&addr, Duration::from_secs(3))
                 .map_err(|e| format!("cannot reach host {addr}: {e}"))?;
             let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
             let _ = s.set_write_timeout(Some(Duration::from_secs(3)));
-            let seals = guest_handshake(&mut s, &secret)?;
-            Ok((s, seals))
+            let (tx_seal, rx_seal, resume) = guest_handshake(&mut s, credential.as_slice())?;
+            Ok((s, tx_seal, rx_seal, resume))
         })();
         match attempt {
-            Ok((s, (tx_seal, rx_seal))) => {
+            Ok((s, tx_seal, rx_seal, resume)) => {
+                credential = Credential::Resume(resume);
                 backoff = Duration::from_millis(500);
                 if let Ok(mut c) = sh.clock.lock() {
                     c.clear(); // a new path may have different delay
@@ -675,6 +740,12 @@ fn guest_loop(addr: SocketAddr, secret: [u8; 16], sh: Arc<GuestShared>, events: 
                 }
             }
             Err(e) => {
+                // A restarted host has no in-memory resume credential. Retry its current
+                // public code once; ordinary reconnects keep using the resume credential.
+                if matches!(&credential, Credential::Resume(_)) && e.contains("invalid join code") {
+                    credential = Credential::Join(join_secret);
+                    continue;
+                }
                 let fatal = e.contains("join code") || e.contains("version mismatch");
                 let _ = events.try_send(if fatal {
                     Event::AuthFailed(e)

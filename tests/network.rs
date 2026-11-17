@@ -89,6 +89,94 @@ fn expired_code_rejected() {
 }
 
 #[test]
+fn pending_handshakes_are_capped_and_a_later_guest_can_connect() {
+    let secret = random_bytes::<16>();
+    let h = host(secret, 60);
+    let _slow: Vec<TcpStream> = (0..10)
+        .map(|_| TcpStream::connect(h.local_addr).expect("open slow client"))
+        .collect();
+
+    let end = Instant::now() + Duration::from_secs(3);
+    let mut rejected = 0;
+    while Instant::now() < end && rejected < 6 {
+        if let Ok(Event::AuthFailed(reason)) = h.events.recv_timeout(Duration::from_millis(50)) {
+            if reason == "too many pending connections" {
+                rejected += 1;
+            }
+        }
+    }
+    // Six immediate rejections prove only four of the ten can be consuming handshake slots.
+    assert_eq!(rejected, 6);
+
+    // The four admitted clients time out after the five-second handshake deadline.
+    std::thread::sleep(Duration::from_secs(6));
+    let g = Guest::start(GuestConfig {
+        host: h.local_addr.to_string(),
+        secret,
+    })
+    .unwrap();
+    assert!(wait_event(&h.events, 5, |e| matches!(e, Event::Connected(_))).is_some());
+    assert!(wait_event(&g.events, 5, |e| matches!(e, Event::Connected(_))).is_some());
+}
+
+#[test]
+fn expired_join_code_rejects_new_guest_but_allows_resume() {
+    let secret = random_bytes::<16>();
+    let h = host(secret, 1);
+    let g = Guest::start(GuestConfig {
+        host: h.local_addr.to_string(),
+        secret,
+    })
+    .unwrap();
+    assert!(wait_event(&h.events, 5, |e| matches!(e, Event::Connected(_))).is_some());
+    assert!(wait_event(&g.events, 5, |e| matches!(e, Event::Connected(_))).is_some());
+
+    std::thread::sleep(Duration::from_millis(1200));
+    let new_guest = Guest::start(GuestConfig {
+        host: h.local_addr.to_string(),
+        secret,
+    })
+    .unwrap();
+    let rejected = wait_event(&new_guest.events, 5, |e| matches!(e, Event::AuthFailed(_)));
+    assert!(matches!(rejected, Some(Event::AuthFailed(reason)) if reason.contains("expired")));
+
+    assert!(h.send(Msg::Bye));
+    assert!(wait_event(&h.events, 8, |e| matches!(e, Event::Connected(_))).is_some());
+    assert!(wait_event(&g.events, 8, |e| matches!(e, Event::Connected(_))).is_some());
+}
+
+#[test]
+fn rotating_join_code_preserves_existing_guest_resume() {
+    let old_secret = random_bytes::<16>();
+    let new_secret = random_bytes::<16>();
+    let h = host(old_secret, 60);
+    let g = Guest::start(GuestConfig {
+        host: h.local_addr.to_string(),
+        secret: old_secret,
+    })
+    .unwrap();
+    assert!(wait_event(&h.events, 5, |e| matches!(e, Event::Connected(_))).is_some());
+    assert!(wait_event(&g.events, 5, |e| matches!(e, Event::Connected(_))).is_some());
+
+    h.rotate(new_secret, now_us() + 60_000_000);
+    assert!(h.send(Msg::Bye));
+    assert!(wait_event(&h.events, 8, |e| matches!(e, Event::Connected(_))).is_some());
+    assert!(wait_event(&g.events, 8, |e| matches!(e, Event::Connected(_))).is_some());
+
+    let old_code_guest = Guest::start(GuestConfig {
+        host: h.local_addr.to_string(),
+        secret: old_secret,
+    })
+    .unwrap();
+    let rejected = wait_event(&old_code_guest.events, 5, |e| {
+        matches!(e, Event::AuthFailed(_))
+    });
+    assert!(
+        matches!(rejected, Some(Event::AuthFailed(reason)) if reason.contains("invalid join code"))
+    );
+}
+
+#[test]
 fn guest_reconnects_after_host_restart_and_host_disconnect_detected() {
     let secret = random_bytes::<16>();
     let h = host(secret, 60);
