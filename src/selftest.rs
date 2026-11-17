@@ -265,6 +265,9 @@ mod imp {
         if args.iter().any(|a| a == "--e2e") {
             return super::e2e::run(args);
         }
+        if let Some(i) = args.iter().position(|a| a == "--video-test") {
+            return video_test(args.get(i + 1).map(String::as_str).unwrap_or(""));
+        }
         println!("DuetSync {} self-test", crate::APP_VERSION);
         let mut sampler = Sampler::default();
         for (label, cap) in [("Inputs", true), ("Outputs", false)] {
@@ -369,6 +372,91 @@ mod imp {
             }
         );
         code
+    }
+
+    /// `--selftest --video-test <youtube link>`: serve the player page, wait for a browser
+    /// tab to connect and unlock sound, start playback on the shared clock and report the
+    /// drift the bridge measures. Real YouTube, real browser; nothing simulated.
+    fn video_test(link: &str) -> i32 {
+        use crate::video::{parse_youtube, VideoBridge};
+        use std::time::{Duration, Instant};
+        let Some(id) = parse_youtube(link) else {
+            println!("FAIL: not a YouTube link: {link}");
+            return 2;
+        };
+        let bridge = match VideoBridge::start(47_811).or_else(|_| VideoBridge::start(0)) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("FAIL bridge: {e}");
+                return 1;
+            }
+        };
+        bridge.load(&id);
+        println!(
+            "Open {} in a browser and click the sound button (90 s timeout)",
+            bridge.url("player")
+        );
+        let t0 = Instant::now();
+        loop {
+            let c = bridge.clients();
+            if c.iter()
+                .any(|c| c.role == "player" && !c.needs_click && c.state != "unstarted")
+            {
+                break;
+            }
+            if t0.elapsed() > Duration::from_secs(90) {
+                println!(
+                    "FAIL: no unlocked player page connected; clients: {:?}",
+                    c.iter()
+                        .map(|c| (&c.role, &c.state, c.needs_click))
+                        .collect::<Vec<_>>()
+                );
+                return 1;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+            if t0.elapsed().as_millis() % 5000 < 200 {
+                bridge.load(&id); // re-send to late pages
+            }
+        }
+        println!("page connected; starting at now + 3 s from 0:30");
+        let start = now_us() + 3_000_000;
+        bridge.play_at(start, 30.0);
+        let mut errs = Vec::new();
+        let end = Instant::now() + Duration::from_secs(25);
+        while Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(500));
+            if now_us() < start + 2_000_000 {
+                continue;
+            }
+            for c in bridge.clients().iter().filter(|c| c.role == "player") {
+                if let Some(e) = c.error_ms {
+                    errs.push(e);
+                }
+                println!(
+                    "  state {:<10} pos {:7.3}s  error {:?} ms  rtt {:.2} ms",
+                    c.state,
+                    c.last_pos_s,
+                    c.error_ms.map(|e| (e * 10.0).round() / 10.0),
+                    c.rtt_ms
+                );
+            }
+        }
+        bridge.pause();
+        if errs.is_empty() {
+            println!("FAIL: no drift measurements");
+            return 1;
+        }
+        let mut a: Vec<f64> = errs.iter().map(|e| e.abs()).collect();
+        a.sort_by(f64::total_cmp);
+        let med = a[a.len() / 2];
+        let p95 = a[(a.len() * 95 / 100).min(a.len() - 1)];
+        println!(
+            "{} video: {} samples, median |error| {med:.1} ms, p95 {p95:.1} ms, worst {:.1} ms",
+            if med <= 60.0 { "OK" } else { "FAIL" },
+            a.len(),
+            a[a.len() - 1]
+        );
+        i32::from(med > 60.0)
     }
 
     fn chirp_test(render: &RenderHandle, cap: &mut CaptureHandle, label: &str) -> i32 {
