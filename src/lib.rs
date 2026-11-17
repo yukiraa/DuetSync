@@ -7,12 +7,14 @@ pub mod calibration;
 pub mod clock;
 pub mod config;
 pub mod diagnostics;
+pub mod live;
 pub mod network;
 pub mod obs;
 pub mod playback;
 pub mod ring;
 pub mod selftest;
 pub mod ui;
+pub mod video;
 
 pub const APP_NAME: &str = "DuetSync";
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");

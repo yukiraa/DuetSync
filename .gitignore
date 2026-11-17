@@ -4,3 +4,4 @@
 /DuetSync.json
 /logs/
 /.omc/
+/target-*/
