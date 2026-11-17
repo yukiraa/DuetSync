@@ -67,3 +67,9 @@ measured with `tools/perf.ps1`:
 
 glow remains the lightest option measured. A Codex attempt (T2) could not measure inside
 its sandbox, so these numbers come from the lead outside the sandbox.
+
+## v0.3.0 note
+
+YouTube mode adds a local web page (in the user's own browser) and a tiny 127.0.0.1 server
+in DuetSync. Live auto-sync adds one capture stream on each PC, only while a song plays.
+Neither runs while idle. Not re-measured for CPU/RAM in this release.

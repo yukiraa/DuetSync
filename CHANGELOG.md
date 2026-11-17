@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (2026-11-17), YouTube songs and live auto-sync
+
+### Added
+- Paste a YouTube link instead of a .wav. Each performer's browser plays it with YouTube's official player, and the host adds the same page to OBS as a Browser Source. DuetSync starts both on the shared clock and keeps them aligned.
+- Live auto-sync while singing: DuetSync compares the guest's real voice on their PC with what arrives through Discord, and updates the OBS delay when it changes by more than 30 ms (network ping is never used).
+- `--selftest --video-test <link>`: real-browser YouTube sync check.
+
+### Changed
+- Session protocol v2: 0.3 and older versions refuse each other with a clear message.
+
+### Measured (one PC, real browser, real YouTube embed)
+- Video alignment after the seek-lead fix: median 23.7 ms, worst 24.6 ms, no buffering stalls (was 118.5 / 171 ms).
+
 ## 0.2.0 (2026-11-17), friendly guided UI
 
 ### Changed

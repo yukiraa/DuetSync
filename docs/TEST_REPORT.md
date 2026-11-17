@@ -83,3 +83,23 @@ target\release\DuetSync.exe --selftest
 target\release\DuetSync.exe --selftest --cable-test     # needs VB-CABLE
 target\release\DuetSync.exe --selftest --e2e [--no-ref] # needs VB-CABLE
 ```
+
+## v0.3.0 additions
+
+Automated: 73 tests pass (`cargo test`), including the live-delay tracker (synthetic singing:
+delay errors under 0.1 ms) and the YouTube bridge (URL parsing, Host/Origin checks, clock
+mapping, simulated seek-latency convergence).
+
+Real browser, one PC (`DuetSync.exe --selftest --video-test https://www.youtube.com/watch?v=aqz-KE-bpKQ`,
+Chromium-based browser, localhost RTT about 0.2 ms):
+
+| Version | Median error | p95 | Worst | Stalls |
+| --- | --- | --- | --- | --- |
+| before the fix | 118.5 ms | 170.4 ms | 171.0 ms | a seek every 3 s |
+| after the fix (learned seek lead) | 23.7 ms | 24.4 ms | 24.6 ms | none |
+
+PENDING (needs two PCs and Discord):
+- live auto-sync with real singing over Discord;
+- YouTube on two PCs at once;
+- OBS Browser Source audio alignment;
+- behaviour when ads play.
