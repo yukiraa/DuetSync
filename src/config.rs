@@ -79,6 +79,8 @@ pub struct Config {
     pub volume: f32,
     pub drift_correction: bool,
     pub countdown_s: f64,
+    /// Measure the Discord delay from the singing itself and re-apply it to OBS.
+    pub auto_sync: bool,
 }
 
 impl Default for Config {
@@ -117,6 +119,7 @@ impl Default for Config {
             volume: 1.0,
             drift_correction: true,
             countdown_s: 4.0,
+            auto_sync: true,
         }
     }
 }

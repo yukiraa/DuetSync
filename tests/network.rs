@@ -251,3 +251,133 @@ fn oversized_frame_and_version_mismatch() {
     assert!(matches!(r, Handshake::Reject { reason } if reason.contains("version")));
     let _ = Sealer::new([0; 32], 1);
 }
+
+// ---------------------------------------------------------------- YouTube mode over a session
+
+mod youtube {
+    use duetsync::app::App;
+    use duetsync::config::{Config, Mode};
+    use serde_json::Value;
+    use std::net::TcpStream;
+    use std::time::{Duration, Instant};
+    use tungstenite::{client, Message, WebSocket};
+
+    fn pump(a: &mut App, b: &mut App, secs: f64, done: impl Fn(&App, &App) -> bool) -> bool {
+        let end = Instant::now() + Duration::from_secs_f64(secs);
+        while Instant::now() < end {
+            a.tick();
+            b.tick();
+            if done(a, b) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        false
+    }
+
+    fn fake_page(port: u16) -> WebSocket<TcpStream> {
+        let stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        client(format!("ws://127.0.0.1:{port}/ws?role=player"), stream)
+            .unwrap()
+            .0
+    }
+
+    fn commands(page: &mut WebSocket<TcpStream>) -> Vec<Value> {
+        let mut out = vec![];
+        for _ in 0..30 {
+            match page.read() {
+                Ok(Message::Text(t)) => out.push(serde_json::from_str(t.as_str()).unwrap()),
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn host_picks_video_guest_follows_and_playback_drives_both_pages() {
+        std::env::set_var("DUETSYNC_NO_BROWSER", "1");
+        let port = 47_883;
+        let mut host = App::with_config(
+            Config {
+                mode: Mode::Host,
+                listen_port: port,
+                last_track: None,
+                auto_sync: false,
+                ..Default::default()
+            },
+            false,
+        );
+        host.start_host();
+        let mut guest = App::with_config(
+            Config {
+                mode: Mode::Guest,
+                last_track: None,
+                auto_sync: false,
+                ..Default::default()
+            },
+            false,
+        );
+        guest.join_input = format!("127.0.0.1:{port}#{}", host.join_code.clone().unwrap());
+        guest.join();
+        assert!(
+            pump(&mut host, &mut guest, 15.0, |h, g| h.connected()
+                && g.clock_estimate().is_some()),
+            "session"
+        );
+
+        host.set_youtube("not a link");
+        assert!(host.yt_id.is_none(), "invalid link rejected");
+        host.set_youtube("https://youtu.be/dQw4w9WgXcQ?t=3");
+        assert_eq!(host.yt_id.as_deref(), Some("dQw4w9WgXcQ"));
+        assert!(
+            pump(&mut host, &mut guest, 10.0, |h, g| h.track_matches()
+                == Some(true)
+                && g.track_matches() == Some(true)),
+            "video id matched on both sides"
+        );
+        assert!(guest.yt_mode && guest.yt_id.as_deref() == Some("dQw4w9WgXcQ"));
+
+        // Playing needs the page open.
+        host.host_play(0, 1.0);
+        assert!(!host.playing(), "no video page connected yet");
+
+        let hp = host.video_bridge().unwrap().port();
+        let gp = guest.video_bridge().unwrap().port();
+        let mut host_page = fake_page(hp);
+        let mut guest_page = fake_page(gp);
+        assert!(
+            pump(&mut host, &mut guest, 5.0, |h, g| h
+                .video_player()
+                .is_some()
+                && g.video_player().is_some()),
+            "pages connected"
+        );
+
+        host.host_play(0, 1.0);
+        assert!(host.playing());
+        assert!(
+            pump(&mut host, &mut guest, 5.0, |_, g| g.playing()),
+            "guest follows Play"
+        );
+        for page in [&mut host_page, &mut guest_page] {
+            let cmds = commands(page);
+            assert!(
+                cmds.iter()
+                    .any(|c| c["t"] == "play_at" && c["from_s"].as_f64() == Some(0.0)),
+                "page got play_at: {cmds:?}"
+            );
+        }
+
+        host.pause();
+        assert!(!host.playing());
+        assert!(pump(&mut host, &mut guest, 5.0, |_, g| !g.playing()));
+        assert!(commands(&mut guest_page).iter().any(|c| c["t"] == "pause"));
+
+        host.shutdown();
+        guest.shutdown();
+    }
+}

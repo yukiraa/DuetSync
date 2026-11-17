@@ -79,6 +79,10 @@ impl Gui {
                 let last = steps::steps(mode).len() - 1;
                 g.step = n.saturating_sub(1).min(last);
                 g.need_init = false;
+                // `DUETSYNC_PREVIEW_YT=1`: show the YouTube variants (host side only).
+                if mode == Mode::Host && std::env::var_os("DUETSYNC_PREVIEW_YT").is_some() {
+                    g.app.set_youtube("dQw4w9WgXcQ");
+                }
             }
             None => {}
         }

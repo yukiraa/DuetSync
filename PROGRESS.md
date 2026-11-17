@@ -9,8 +9,11 @@ Git repo (local only, branch `main`). Coordination: TASKS.md, AGENT_LOG.md, brie
 ## Multi-agent setup
 - Codex: Codex app's CLI `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` (0.167.0-alpha.3.2,
   ChatGPT login). Claude Code Codex plugin NOT installed; run via `tools/run-codex.ps1`.
-  Working models: `gpt-reserve` (audit), `gpt-5.6-terra` (implementation). `gpt-6-astra`
-  is rejected for ChatGPT accounts. The Codex sandbox has no crates.io access and can't
+  Working models: `gpt-reserve` (audit), `gpt-5.6-terra` (T2-T8 implementation).
+  `gpt-6-astra` is rejected for ChatGPT accounts. As of 2026-11-17 17:5x the catalog also
+  lists, and smoke tests pass for, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-5.6-sol` and
+  `gpt-6.1-terra`; earlier the same day the catalog showed only 5 models. Use `gpt-6.1-sol`
+  for primary implementation from now on. The Codex sandbox has no crates.io access and can't
   measure the GUI.
 - Claude subagents: Sonnet (`general-purpose`, model sonnet), `light-worker` (mechanical).
 

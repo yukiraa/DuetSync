@@ -2,7 +2,7 @@
 
 use super::fun::{
     caption, card, check_row, fun_button, fun_button_if, meter, pill, small_button,
-    small_button_if, soft, sticker, text_field, FunButton, Kind,
+    small_button_if, soft, sticker, sticker_with, text_field, FunButton, Kind,
 };
 use super::mascot::{bob_offset, mascot, mascot_faded, Mood};
 use super::panels::{device_combo, input_combo, toggle_chip, value};
@@ -76,7 +76,7 @@ impl Step {
             Step::HostConnect => "Your partner needs this invite to join. Works on the same Wi-Fi, or over Tailscale if you live far apart.",
             Step::HostAudio => "Pick your headphones and microphone, and tell DuetSync where your partner's voice comes out.",
             Step::GuestAudio => "Pick your headphones, then check that the test sound can reach your microphone.",
-            Step::Song => "You both load the exact same instrumental .wav file.",
+            Step::Song => "You both use the exact same song: an instrumental .wav file, or a YouTube link.",
             Step::Measure => "We play little test sounds on your partner's PC and time how late they reach you through Discord. Takes about 15 seconds. Shhh while it runs!",
             Step::Obs => "Connect OBS, then send the measured delay so your recording lines up.",
             Step::Sing => "Everything is ready. Time to sing!",
@@ -98,9 +98,7 @@ pub fn raw_done(app: &App, step: Step) -> bool {
     match step {
         Step::HostConnect => app.connected(),
         Step::HostAudio => app.guest_source_ok,
-        Step::Song => {
-            app.track.is_some() && (!app.connected() || app.track_matches() == Some(true))
-        }
+        Step::Song => app.media_ready() && (!app.connected() || app.track_matches() == Some(true)),
         Step::Measure => app
             .last_calib
             .as_ref()
@@ -127,7 +125,7 @@ pub fn blocker(app: &App, step: Step) -> Option<Step> {
         {
             Some(Step::Measure)
         }
-        Step::Sing if app.track.is_none() => Some(Step::Song),
+        Step::Sing if !app.media_ready() => Some(Step::Song),
         Step::GuestReady if !app.connected() => Some(Step::GuestJoin),
         _ => None,
     }
@@ -172,15 +170,23 @@ pub fn bubble_sentence(app: &App, step: Step, done: bool) -> String {
             }
         }
         Step::Song => {
-            if app.track.is_none() {
-                "Pick the instrumental .wav. Your partner needs the exact same file."
+            if !app.media_ready() {
+                if app.yt_mode {
+                    "Paste a YouTube link and press Use this video."
+                } else {
+                    "Pick the instrumental .wav. Your partner needs the exact same file."
+                }
+            } else if app.yt_mode && app.video_player().is_none() {
+                "Press Open video and keep that browser tab open."
+            } else if app.yt_mode && app.video_needs_click() {
+                "Click the video tab once to turn on sound."
             } else if app.track_matches() == Some(false) {
                 match app.cfg.mode {
                     Mode::Host => {
-                        "Your partner's file is different. Send them the exact same .wav."
+                        "Your partner's song is different. Send them the exact same .wav."
                     }
                     Mode::Guest => {
-                        "Your host's file is different. Ask them for the exact same .wav."
+                        "Your host's song is different. Ask them for the exact same .wav."
                     }
                 }
             } else if app.connected() && app.track_matches().is_none() {
@@ -217,7 +223,7 @@ pub fn bubble_sentence(app: &App, step: Step, done: bool) -> String {
                 "Press Apply to OBS to send the delay."
             }
         }
-        Step::Sing if app.track.is_none() => "Load the song first (step 3), then come back here.",
+        Step::Sing if !app.media_ready() => "Load the song first (step 3), then come back here.",
         Step::Sing => match app.cfg.mode {
             Mode::Host => {
                 if app.playing() {
@@ -508,7 +514,110 @@ fn host_audio(g: &mut Gui, ui: &mut Ui) {
 
 // -------------------------------------------------------------------- song
 
+/// Big sticker that works as a two-way switch. Returns true when an unselected one is clicked.
+fn source_toggle(ui: &mut Ui, selected: bool, title: &str, sub: &str) -> bool {
+    let r = sticker_with(
+        ui,
+        if selected { SUN_TINT } else { PAPER },
+        18,
+        egui::Margin::symmetric(16, 12),
+        if selected { 4 } else { 2 },
+        |ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.label(caption(
+                if selected { "PICKED" } else { "TAP TO PICK" },
+                INK_SOFT,
+            ));
+            ui.label(RichText::new(title).font(fredoka(18.0)));
+            ui.label(soft(sub));
+        },
+    );
+    let resp = ui.interact(
+        r.response.rect,
+        ui.make_persistent_id(title),
+        Sense::click(),
+    );
+    if resp.hovered() && !selected {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    resp.clicked() && !selected
+}
+
 fn song(g: &mut Gui, ui: &mut Ui) {
+    if g.app.cfg.mode == Mode::Host {
+        let yt = g.app.yt_mode;
+        let mut pick = None;
+        ui.columns(2, |cols| {
+            if source_toggle(
+                &mut cols[0],
+                !yt,
+                "WAV file",
+                "An instrumental you both have",
+            ) {
+                pick = Some(false);
+            }
+            if source_toggle(
+                &mut cols[1],
+                yt,
+                "YouTube link",
+                "You both watch the same video",
+            ) {
+                pick = Some(true);
+            }
+        });
+        if let Some(on) = pick {
+            g.app.set_yt_mode(on);
+        }
+    }
+    if g.app.yt_mode {
+        song_youtube(g, ui);
+    } else {
+        song_wav(g, ui);
+    }
+}
+
+/// "Your partner has the same song" rows, for both song kinds.
+fn match_rows(ui: &mut Ui, app: &App) {
+    let what = if app.yt_mode { "video" } else { "file" };
+    let who = match app.cfg.mode {
+        Mode::Host => "partner",
+        Mode::Guest => "host",
+    };
+    if !app.media_ready() {
+        return;
+    }
+    match app.track_matches() {
+        Some(true) => check_row(ui, true, &format!("Your {who} has the same {what}")),
+        Some(false) => {
+            let partner = if app.yt_mode {
+                String::new()
+            } else {
+                let name = match app.cfg.mode {
+                    Mode::Host => app.guest_track_name.clone(),
+                    Mode::Guest => app.host_track.as_ref().map(|t| t.name.clone()),
+                };
+                format!(" ({})", name.unwrap_or_default())
+            };
+            check_row(
+                ui,
+                false,
+                &format!("Your {who}'s {what} is different{partner}"),
+            );
+        }
+        None if app.connected() => check_row(
+            ui,
+            false,
+            &format!("Waiting for your {who} to load the same song..."),
+        ),
+        None => {
+            ui.label(soft(format!(
+                "When your {who} joins, we check that you have the same {what}."
+            )));
+        }
+    }
+}
+
+fn song_wav(g: &mut Gui, ui: &mut Ui) {
     let app = &mut g.app;
     card(ui, Some("Your song"), |ui| {
         ui.horizontal(|ui| {
@@ -532,38 +641,102 @@ fn song(g: &mut Gui, ui: &mut Ui) {
         } else {
             ui.label(soft("No song yet. Both of you need the identical file."));
         }
-        let partner = match app.cfg.mode {
-            Mode::Host => app.guest_track_name.clone(),
-            Mode::Guest => app.host_track.as_ref().map(|t| t.name.clone()),
-        };
-        let who = match app.cfg.mode {
-            Mode::Host => "partner",
-            Mode::Guest => "host",
-        };
-        if app.track.is_some() {
-            match app.track_matches() {
-                Some(true) => check_row(ui, true, &format!("Your {who} has the same file")),
-                Some(false) => check_row(
-                    ui,
-                    false,
-                    &format!(
-                        "Your {who}'s file is different ({})",
-                        partner.unwrap_or_default()
-                    ),
-                ),
-                None if app.connected() => check_row(
-                    ui,
-                    false,
-                    &format!("Waiting for your {who} to load the same song..."),
-                ),
-                None => {
-                    ui.label(soft(format!(
-                        "When your {who} joins, we check that you have the same file."
-                    )));
-                }
-            }
-        }
+        match_rows(ui, app);
     });
+}
+
+/// Video page connected + the one-click sound unlock reminder.
+fn video_status_rows(ui: &mut Ui, app: &App) {
+    check_row(
+        ui,
+        app.video_player().is_some(),
+        if app.video_player().is_some() {
+            "Video page connected"
+        } else {
+            "Video page not connected yet: press Open video"
+        },
+    );
+    if app.video_needs_click() {
+        check_row(ui, false, "Click the video tab once to turn on sound");
+    }
+}
+
+fn song_youtube(g: &mut Gui, ui: &mut Ui) {
+    let now = ui.input(|i| i.time);
+    let host = g.app.cfg.mode == Mode::Host;
+    let copied = now < g.copied_until;
+    let mut copy_url = None;
+    let app = &mut g.app;
+    if host {
+        card(ui, Some("Your YouTube video"), |ui| {
+            ui.horizontal(|ui| {
+                let btn = FunButton::new("Use this video", Kind::Coral);
+                let w = ui.available_width() - btn.measure(ui).x - ui.spacing().item_spacing.x;
+                let field = text_field(ui, w, &mut app.yt_input, "Paste a YouTube link", INK, 2.0);
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.add(btn).clicked() || enter {
+                    let link = app.yt_input.clone();
+                    app.set_youtube(&link);
+                }
+            });
+            let Some(id) = app.yt_id.clone() else {
+                ui.label(soft(
+                    "Paste a youtube.com or youtu.be link. Your partner gets the same video automatically.",
+                ));
+                return;
+            };
+            sticker(ui, SUN_TINT, 16, |ui| {
+                ui.label(RichText::new(format!("Video {id}")).font(fredoka(17.0)));
+                ui.horizontal(|ui| {
+                    if fun_button(ui, "Open video", Kind::Coral).clicked() {
+                        app.open_video();
+                    }
+                    ui.label(soft("Opens in your browser. Keep that tab open."));
+                });
+                video_status_rows(ui, app);
+                match_rows(ui, app);
+            });
+            if let Some(url) = app.video_bridge().map(|b| b.url("obs")) {
+                ui.label(
+                    RichText::new("For your stream: add this as an OBS Browser Source")
+                        .font(theme::nunito_x(14.0)),
+                );
+                ui.horizontal(|ui| {
+                    let btn = FunButton::new(if copied { "Copied!" } else { "Copy" }, Kind::White)
+                        .small();
+                    let w = ui.available_width() - btn.measure(ui).x - ui.spacing().item_spacing.x;
+                    let mut shown: &str = &url;
+                    text_field(ui, w, &mut shown, "", INK, 2.0);
+                    if ui.add(btn).clicked() {
+                        copy_url = Some(url.clone());
+                    }
+                });
+                ui.label(soft(
+                    "In OBS: Sources, +, Browser, paste the URL, size 1920x1080, tick Control audio via OBS",
+                ));
+            }
+        });
+    } else {
+        card(ui, Some("Your host picked a YouTube video"), |ui| {
+            if let Some(id) = &app.yt_id {
+                ui.label(RichText::new(format!("Video {id}")).font(fredoka(17.0)));
+            }
+            ui.horizontal(|ui| {
+                if fun_button(ui, "Open video", Kind::Mint).clicked() {
+                    app.open_video();
+                }
+                ui.label(soft("It also opens by itself. Keep that browser tab open."));
+            });
+            video_status_rows(ui, app);
+            match_rows(ui, app);
+        });
+    }
+    if let Some(url) = copy_url {
+        ui.ctx().copy_text(url);
+        g.copied_until = now + 1.6;
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1700));
+    }
 }
 
 // ------------------------------------------------------------ host: measure
@@ -867,6 +1040,11 @@ fn obs(g: &mut Gui, ui: &mut Ui) {
                 row_label(ui, "Instrumental");
                 changed |= input_combo(ui, "r_mus", &mut app.cfg.obs_music, &names);
                 ui.end_row();
+                if app.yt_mode {
+                    ui.label("");
+                    ui.label(soft("pick the DuetSync Browser Source"));
+                    ui.end_row();
+                }
                 row_label(ui, "Partner (Discord)");
                 changed |= input_combo(ui, "r_gst", &mut app.cfg.obs_guest, &names);
                 ui.end_row();
@@ -1062,7 +1240,7 @@ fn paint_note(ui: &mut Ui) {
 fn sing(g: &mut Gui, ui: &mut Ui, avail_h: f32) {
     // Small windows: smaller mascots and no extra sentence, so the three tiles stay visible.
     let compact = avail_h < 520.0;
-    let stage_h = (avail_h - 168.0).max(0.0);
+    let stage_h = (avail_h - 168.0 - 64.0).max(0.0);
     let (host_px, guest_px) = if compact {
         (96.0, 90.0)
     } else {
@@ -1073,11 +1251,17 @@ fn sing(g: &mut Gui, ui: &mut Ui, avail_h: f32) {
     let bob = if playing { bob_offset(ui) } else { 0.0 };
     {
         let app = &mut g.app;
-        let name = app
-            .track
-            .as_ref()
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| "Pick a song in step 3".into());
+        let name = if app.yt_mode {
+            app.yt_id
+                .as_ref()
+                .map(|id| format!("YouTube video {id}"))
+                .unwrap_or_else(|| "Pick a video in step 3".into())
+        } else {
+            app.track
+                .as_ref()
+                .map(|t| t.name.clone())
+                .unwrap_or_else(|| "Pick a song in step 3".into())
+        };
         let sync = app.sync_error_ms();
         egui::Frame::new()
             .fill(LILAC_TINT)
@@ -1148,7 +1332,7 @@ fn sing(g: &mut Gui, ui: &mut Ui, avail_h: f32) {
                         );
                     }
                     if host && !playing {
-                        let can = app.track.is_some()
+                        let can = app.media_ready()
                             && (!app.connected() || app.track_matches() == Some(true));
                         if ui
                             .add(FunButton::new("Play", Kind::Coral).min_width(160.0).enabled(can))
@@ -1159,7 +1343,11 @@ fn sing(g: &mut Gui, ui: &mut Ui, avail_h: f32) {
                             app.host_play(from, cd);
                         }
                         if !can && !compact {
-                            ui.label(soft("Load the same song on both PCs to play."));
+                            ui.label(soft(if app.yt_mode {
+                                "Both of you need the video page open to play."
+                            } else {
+                                "Load the same song on both PCs to play."
+                            }));
                         }
                     }
                 });
@@ -1231,6 +1419,88 @@ fn sing(g: &mut Gui, ui: &mut Ui, avail_h: f32) {
             });
         }
     });
+    sing_extras(g, ui);
+}
+
+/// Auto-sync stickers and the video page status under the three tiles.
+fn sing_extras(g: &mut Gui, ui: &mut Ui) {
+    let now = now_us();
+    let app = &mut g.app;
+    let host = app.cfg.mode == Mode::Host;
+    let playing = app.playing();
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(10.0, 8.0);
+        let on = app.cfg.auto_sync;
+        if toggle_chip(
+            ui,
+            if on {
+                "Auto-sync: on"
+            } else {
+                "Auto-sync: off"
+            },
+            on,
+        )
+        .clicked()
+        {
+            app.cfg.auto_sync = !on;
+            app.save();
+        }
+        if host {
+            let text = if !on {
+                "Live delay: off".to_string()
+            } else if !playing {
+                "Live delay: starts when you play".to_string()
+            } else if app.live_error.is_some() && !app.live_running() {
+                "Live delay: unavailable".to_string()
+            } else if let Some(ms) = app
+                .live_latency_ms
+                .filter(|_| now - app.live_updated_us < 20_000_000)
+            {
+                format!("Live delay: {ms:.0} ms")
+            } else if !app.live_running() || now - app.live_started_us < 12_000_000 {
+                "Live delay: listening...".to_string()
+            } else {
+                "Live delay: not enough singing yet".to_string()
+            };
+            pill(ui, &text, PAPER, None);
+            if let Some((from, to, at)) = app.last_auto_apply {
+                pill(
+                    ui,
+                    &format!(
+                        "Last auto-update: {from:.0} -> {to:.0} ms, {} s ago",
+                        ((now - at) / 1_000_000).max(0)
+                    ),
+                    PAPER,
+                    None,
+                );
+            }
+        } else {
+            pill(
+                ui,
+                "Your host measures the delay while you sing",
+                PAPER,
+                None,
+            );
+        }
+        if app.yt_mode {
+            if let Some(c) = app.video_player() {
+                let (text, fill) = match (c.state.as_str(), c.error_ms) {
+                    ("ad", _) => ("Video: ad playing, sync resumes after".to_string(), SUN),
+                    (_, Some(e)) if playing => (
+                        format!("Video in sync: {e:+.0} ms"),
+                        if e.abs() > 60.0 { SUN } else { PAPER },
+                    ),
+                    (state, _) => (format!("Video: {state}"), PAPER),
+                };
+                pill(ui, &text, fill, None);
+            } else {
+                pill(ui, "Video page not open", SUN, None);
+            }
+        }
+    });
+    if app.yt_mode && app.video_needs_click() {
+        check_row(ui, false, "Click the video tab once to turn on sound");
+    }
 }
 
 fn advanced_sing(g: &mut Gui, ui: &mut Ui) {

@@ -20,6 +20,18 @@ Desktop Audio ──────────► muted / removed
 
 Application Audio Capture needs Windows 10 2004+ and OBS 28+.
 
+### YouTube songs
+
+When the song is a YouTube video there is no `DuetSync.exe` audio to capture. Use the
+Browser Source URL shown in step 3 as the **Instrumental** source instead:
+
+1. OBS Sources, +, **Browser**, paste the URL (it ends in `?role=obs`).
+2. Size 1920x1080, tick **Control audio via OBS**.
+3. In DuetSync step 5 pick that Browser Source as the Instrumental.
+
+The OBS page and your own browser tab are two separate players kept on the same timeline.
+Mute your own tab in headphones only if you hear an echo; it is your monitor, not the stream.
+
 ## Do not
 
 - **Keep Desktop Audio live.** It contains Discord *and* the instrumental, so the audience

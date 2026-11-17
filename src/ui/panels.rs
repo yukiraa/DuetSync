@@ -230,13 +230,23 @@ pub fn transport(g: &mut Gui, ui: &mut egui::Ui) {
     }
     let host = g.app.cfg.mode == Mode::Host;
     let rate = g.app.track_rate();
-    let total = g.app.track.as_ref().map(|t| t.frames).unwrap_or(0) as f64;
-    let has_track = g.app.track.is_some();
+    let yt = g.app.yt_mode;
+    // A YouTube video's length is unknown: show the elapsed time only and no seeking.
+    let total = if yt {
+        0.0
+    } else {
+        g.app.track.as_ref().map(|t| t.frames).unwrap_or(0) as f64
+    };
+    let has_track = g.app.media_ready();
     let playing = g.app.playing();
     let pos = g.seek_drag.unwrap_or_else(|| g.app.position_frames());
     let countdown = g.app.countdown_s();
     let sync = g.app.sync_error_ms();
-    let time_s = format!("{} / {}", fmt_time(pos, rate), fmt_time(total, rate));
+    let time_s = if yt {
+        fmt_time(pos, rate)
+    } else {
+        format!("{} / {}", fmt_time(pos, rate), fmt_time(total, rate))
+    };
     let tail = if let Some(c) = countdown {
         Tail::Countdown(format!("Starting in {}...", c.ceil() as u32))
     } else if let Some((e, _)) = sync.filter(|_| host) {
@@ -247,7 +257,11 @@ pub fn transport(g: &mut Gui, ui: &mut egui::Ui) {
         }
     } else if host {
         Tail::Hint(if !has_track {
-            "Load a song in step 3 to play".into()
+            if yt {
+                "Choose a video in step 3 to play".into()
+            } else {
+                "Load a song in step 3 to play".into()
+            }
         } else if playing {
             "Playing".into()
         } else {
@@ -324,7 +338,7 @@ pub fn transport(g: &mut Gui, ui: &mut egui::Ui) {
                     w,
                     frac,
                     if host { CORAL } else { MINT },
-                    host && has_track,
+                    host && has_track && !yt,
                 );
                 if let Some(f) = new {
                     let p = f as f64 * total;

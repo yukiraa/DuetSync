@@ -143,6 +143,40 @@ two seconds if something drifted.
 Monitor yourselves with headphones the normal way (Discord + local music). **Never**
 monitor through OBS's delayed output.
 
+### YouTube songs
+
+Instead of a .wav, the host can pick **YouTube link** in step 3, paste a link and press
+**Use this video**. The guest gets the same video automatically (the match is the video id).
+
+- **Open video** opens DuetSync's local player page (`http://127.0.0.1:...`) in your normal
+  browser. The guest's page opens by itself. Keep that tab open: it plays the sound you hear.
+- Browsers block sound until the page is clicked once. DuetSync shows **Click the video tab
+  once to turn on sound** until you do.
+- For your stream, add the **OBS Browser Source** URL shown in step 3: in OBS, Sources, +,
+  Browser, paste the URL, size 1920x1080, tick **Control audio via OBS**. Pick that source as
+  the Instrumental in step 5.
+- DuetSync uses YouTube's official embedded player and never downloads anything. Both
+  players are kept on the shared timeline to about +-50 ms (a small seek fixes bigger drift).
+  The video's length is unknown, so only the elapsed time shows and seeking is off.
+- Ads break sync until they end. YouTube Premium avoids ads.
+
+### Auto-sync while singing
+
+With **Auto-sync** on (the default), DuetSync measures the Discord delay from your actual
+singing and keeps OBS up to date while a song plays.
+
+- The guest's microphone and the host's capture of the guest's Discord voice are turned into
+  a tiny loudness envelope and compared. About 1 KB per second goes from the guest to the
+  host. Nothing is recorded or stored, and the captures stop when the song stops.
+- The host sees **Live delay: 205 ms**. Estimates are smoothed. When the delay differs from
+  the one in OBS by more than 30 ms in two checks in a row (and at least 10 s after the last
+  update), OBS is updated by itself and the log says `Auto-sync: 182 -> 221 ms, OBS updated`.
+  A tiny audio blip is possible with each update.
+- It only changes OBS after DuetSync has applied offsets once (step 5) and OBS is connected.
+  Otherwise it just shows the number. Recalibrating replaces the live value.
+- Both of you need to sing. Silence, talking over the music or Krisp style noise suppression
+  can hide the match; then nothing changes. The network ping is never used for this.
+
 ---
 
 ## Troubleshooting
